@@ -143,8 +143,8 @@ const fmtDuration = (mins: number): string => {
   const h = Math.floor(mins / 60);
   const m = Math.floor(mins % 60);
   const s = Math.round((mins % 1) * 60);
-  if (h > 0) return `${h}h ${m}:${String(s).padStart(2,'0')}`;
-  return `${m}:${String(s).padStart(2,'0')}`;
+  if (h > 0) return `${h}h ${m}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
 };
 
 const getWorkoutIcon = (w: Workout) => WORKOUT_ICONS[getWorkoutName(w)] || '⚡';
@@ -182,10 +182,10 @@ function predictRaceTimes(workouts: Workout[]) {
     .filter(r => r.dist > 3000 && r.pace && r.pace > 3 && r.pace < 20);
   if (runs.length < 2) return null;
   const best = runs.reduce((a, b) => {
-  const scoreA = (1 / a.pace!) * Math.pow(a.dist / 1000, 0.15);
-  const scoreB = (1 / b.pace!) * Math.pow(b.dist / 1000, 0.15);
-  return scoreA > scoreB ? a : b;
-});
+    const scoreA = (1 / a.pace!) * Math.pow(a.dist / 1000, 0.15);
+    const scoreB = (1 / b.pace!) * Math.pow(b.dist / 1000, 0.15);
+    return scoreA > scoreB ? a : b;
+  });
   const bestPace = best.pace!; const bestDist = best.dist;
   const riegel = (d: number) => bestPace * (bestDist / 1000) * Math.pow(d / (bestDist / 1000), 1.06);
   const fmtTime = (m: number) => { const h = Math.floor(m / 60); const mn = Math.floor(m % 60); const s = Math.round((m % 1) * 60); return h > 0 ? `${h}h ${mn}m` : `${mn}:${String(s).padStart(2, '0')}`; };
@@ -436,7 +436,7 @@ function HRHeatmap({ data }: { data: [number, number][] }) {
     <div className="relative">
       {hovered !== null && data[hovered]?.[1] > 0 && (
         <div className="absolute -top-8 left-0 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1 text-[10px] font-black z-10 pointer-events-none" style={{ color: data[hovered][1] > 150 ? '#f43f5e' : data[hovered][1] > 120 ? '#fb923c' : data[hovered][1] > 100 ? '#fbbf24' : '#34d399' }}>
-          {Math.floor(hovered / 60)}:{String(hovered % 60).padStart(2,'0')} · {data[hovered][1]} bpm
+          {Math.floor(hovered / 60)}:{String(hovered % 60).padStart(2, '0')} · {data[hovered][1]} bpm
         </div>
       )}
       <div className="flex flex-wrap gap-[2px]">
@@ -457,10 +457,10 @@ function SleepBar({ deep, rem, light, wake }: { deep: number; rem: number; light
   const total = deep + rem + light + wake;
   if (!total) return <div className="h-3 rounded-full bg-zinc-800" />;
   const segs = [
-    { v: deep, color: '#818cf8', label: 'Deep', desc: `${deep}min (${Math.round(deep/total*100)}%)` },
-    { v: rem, color: '#c084fc', label: 'REM', desc: `${rem}min (${Math.round(rem/total*100)}%)` },
-    { v: light, color: '#334155', label: 'Light', desc: `${light}min (${Math.round(light/total*100)}%)` },
-    { v: wake, color: '#7f1d1d', label: 'Awake', desc: `${wake}min (${Math.round(wake/total*100)}%)` },
+    { v: deep, color: '#818cf8', label: 'Deep', desc: `${deep}min (${Math.round(deep / total * 100)}%)` },
+    { v: rem, color: '#c084fc', label: 'REM', desc: `${rem}min (${Math.round(rem / total * 100)}%)` },
+    { v: light, color: '#334155', label: 'Light', desc: `${light}min (${Math.round(light / total * 100)}%)` },
+    { v: wake, color: '#7f1d1d', label: 'Awake', desc: `${wake}min (${Math.round(wake / total * 100)}%)` },
   ].filter(s => s.v > 0);
   return (
     <div className="relative">
@@ -578,11 +578,11 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     const MAX_HR = 199; // 220 - your age (what's your age?)
     points.forEach(hr => {
       const pct = hr / MAX_HR;
-      if (pct < 0.60) zones[0]++;       // Z1 < 115 bpm
+      if (pct < 0.60) zones[0]++;        // Z1 < 115 bpm
       else if (pct < 0.70) zones[1]++; // Z2 115–134
       else if (pct < 0.80) zones[2]++; // Z3 134–154
       else if (pct < 0.90) zones[3]++; // Z4 154–173
-      else zones[4]++;                  // Z5 173+
+      else zones[4]++;                   // Z5 173+
     });
     const total = points.length;
     return zones.map(z => Math.round(z / total * 100));
@@ -685,6 +685,11 @@ export default function SuperSenseDashboard() {
   const [aiMessage, setAiMessage] = useState('');
   const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
 
+  const [aiQuery, setAiQuery] = useState('');
+  const [aiQueryAnswer, setAiQueryAnswer] = useState('');
+  // Correctly defined state for query loading
+  const [aiQueryLoading, setAiQueryLoading] = useState(false);
+
   const loadData = useCallback(async () => {
     const [{ data: liveHealth }, { data: histActivity }, { data: histSleep }, { data: detailedWorkouts }] = await Promise.all([
       supabase.from('daily_health').select('*').order('date', { ascending: true }).limit(365),
@@ -719,10 +724,23 @@ export default function SuperSenseDashboard() {
 
   useEffect(() => { loadData(); const t = setInterval(loadData, 5 * 60 * 1000); return () => clearInterval(t); }, [loadData]);
 
-  const [aiQuery, setAiQuery] = useState('');
-  const [aiQueryAnswer, setAiQueryAnswer] = useState('');
-  const [aiQueryLoading, setAiQueryLoading] = useState(false);
-  
+
+  // Helper function moved OUT of the return block and into the component body
+  const buildContext = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
+    return `
+        Date: ${m.latest.date}
+        Recovery: ${m.recoveryScore}/100
+        Sleep: ${m.latest.sleep_score}/100 (${(m.totalSleep / 60).toFixed(1)}h)
+        Deep Sleep: ${m.deepSleep}min
+        RHR: ${m.latest.hr_resting} bpm (Baseline: ${m.rhrBaseline})
+        HRV: ${m.estHRV} ms
+        Steps: ${m.latest.steps}
+        Strain: ${m.strainScore}
+        TSB: ${m.tsb} (ATL: ${m.atl}, CTL: ${m.ctl})
+        Workout Count Today: ${m.todayWorkouts.length}
+      `.trim();
+  };
+
   const runAI = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     setAiLoading(true);
     try {
@@ -732,22 +750,22 @@ export default function SuperSenseDashboard() {
         const dur = w.duration_minutes || Math.round((w.duration_seconds || 0) / 60);
         const dist = w.distance_meters || w.distance || 0;
         const pace = dur && dist > 200 ? (dur / (dist / 1000)).toFixed(2) : null;
-        return `${(w.date || '').slice(5)} ${w.type_name || w.type}: ${dur}min cal=${w.calories||0} hr=${w.avg_hr||'--'}/${w.max_hr||'--'}${dist > 0 ? ' '+((dist/1000).toFixed(1))+'km' : ''}${pace ? ' '+pace+'/km' : ''}`;
+        return `${(w.date || '').slice(5)} ${w.type_name || w.type}: ${dur}min cal=${w.calories || 0} hr=${w.avg_hr || '--'}/${w.max_hr || '--'}${dist > 0 ? ' ' + ((dist / 1000).toFixed(1)) + 'km' : ''}${pace ? ' ' + pace + '/km' : ''}`;
       }).join('\n');
       const sleepTrend = m.last30.slice(-14).map(d => {
         const deep = d.sleep_deep_minutes || d.deep_sleep_minutes || 0;
         const rem = d.sleep_rem_minutes || d.rem_sleep_minutes || 0;
         const total = d.sleep_total_minutes || (deep + rem + (d.sleep_light_minutes || d.shallow_sleep_minutes || 0));
-        return `${(d.date||'').slice(5)}: ${(total/60).toFixed(1)}h score=${d.sleep_score||0} deep=${deep}m rem=${rem}m`;
+        return `${(d.date || '').slice(5)}: ${(total / 60).toFixed(1)}h score=${d.sleep_score || 0} deep=${deep}m rem=${rem}m`;
       }).join('\n');
-      const rhrTrend = m.last30.slice(-14).filter(d => d.hr_resting > 0).map(d => `${(d.date||'').slice(5)}:${d.hr_resting}`).join(', ');
+      const rhrTrend = m.last30.slice(-14).filter(d => d.hr_resting > 0).map(d => `${(d.date || '').slice(5)}:${d.hr_resting}`).join(', ');
       const last30d = new Date(); last30d.setDate(last30d.getDate() - 30);
       const last30Workouts = workouts.filter(w => new Date(w.date || String(w.start_time)) >= last30d);
       const prompt = [
         "You are an elite sports scientist and performance coach. Give deep, specific, data-driven insights. Reference actual numbers. Be direct like a coach who knows this athlete well.\n",
         `TODAY: Recovery ${m.recoveryScore}/100 | RHR ${m.latest.hr_resting}bpm (baseline ~${m.rhrBaseline}, delta ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta}) | HRV ${m.estHRV}ms`,
-        `Sleep: ${m.latest.sleep_score}/100 | ${(m.totalSleep/60).toFixed(1)}h | Deep ${m.deepSleep}min | REM ${m.remSleep}min | Stress ${m.latest.stress_current}/100`,
-        `Steps: ${(m.latest.steps||0).toLocaleString()} | Strain ${m.strainScore}/21 | TSB ${m.tsb} (ATL ${m.atl} / CTL ${m.ctl})\n`,
+        `Sleep: ${m.latest.sleep_score}/100 | ${(m.totalSleep / 60).toFixed(1)}h | Deep ${m.deepSleep}min | REM ${m.remSleep}min | Stress ${m.latest.stress_current}/100`,
+        `Steps: ${(m.latest.steps || 0).toLocaleString()} | Strain ${m.strainScore}/21 | TSB ${m.tsb} (ATL ${m.atl} / CTL ${m.ctl})\n`,
         "14-DAY SLEEP:", sleepTrend, "\n14-DAY RHR:", rhrTrend,
         `\nLAST 7 DAYS WORKOUTS:\n${recentWorkouts || 'None'}`,
         `\nLAST 30 DAYS: ${last30Workouts.length} total sessions`,
@@ -762,30 +780,29 @@ export default function SuperSenseDashboard() {
     setAiLoading(false);
   };
 
-   const runAIQuery = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
+  const runAIQuery = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     if (!aiQuery.trim()) return;
-    
+
     const question = aiQuery;
     setAiQuery('');
-    setAiQueryLoading(true); // Now this works because we defined the state
+    setAiQueryLoading(true);
     setAiQueryAnswer('');
-    
+
     try {
-      // Now this works because we defined the function
-      const context = buildContext(m); 
-      
-      const res = await fetch('/api/ai', { 
-        method: 'POST', 
-        headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ 
+      const context = buildContext(m);
+
+      const res = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           prompt: `You are an elite sports coach. Answer concisely using this athlete's data.
           
           DATA:
           ${context}
           
           QUESTION:
-          ${question}` 
-        }) 
+          ${question}`
+        })
       });
 
       const data = await res.json();
@@ -794,7 +811,7 @@ export default function SuperSenseDashboard() {
     } catch (err: any) {
       setAiQueryAnswer('Error: ' + (err.message || 'Unknown error'));
     }
-    
+
     setAiQueryLoading(false);
   };
 
@@ -856,43 +873,29 @@ export default function SuperSenseDashboard() {
         </div>
 
         <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-4 flex gap-3">
-        <input
-          type="text"
-          value={aiQuery}
-          onChange={e => setAiQuery(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && runAIQuery(m)}
-          placeholder="Ask your coach... e.g. should I run today? what's my weak point?"
-          className="flex-1 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 transition-colors"
-        />
-        <button 
-        onClick={() => runAIQuery(m)} 
-        disabled={aiQueryLoading || !aiQuery.trim()} // Changed from aiLoading to aiQueryLoading
-        className="..."
-      >
-        {aiQueryLoading ? '...' : 'Ask'} {/* Optional: Add visual feedback */}
-      </button>
-      {aiQueryAnswer && (
-        <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
-          <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">💬</div>
-          <div className="text-sm leading-relaxed text-zinc-300 font-light">{aiQueryAnswer}</div>
+          <input
+            type="text"
+            value={aiQuery}
+            onChange={e => setAiQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && runAIQuery(m)}
+            placeholder="Ask your coach... e.g. should I run today? what's my weak point?"
+            className="flex-1 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 transition-colors"
+          />
+          <button
+            onClick={() => runAIQuery(m)}
+            disabled={aiQueryLoading || !aiQuery.trim()}
+            className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30"
+          >
+            {aiQueryLoading ? '...' : 'Ask'}
+          </button>
         </div>
-      )}
+        {aiQueryAnswer && (
+          <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
+            <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">💬</div>
+            <div className="text-sm leading-relaxed text-zinc-300 font-light">{aiQueryAnswer}</div>
+          </div>
+        )}
 
-        const buildContext = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
-      return `
-        Date: ${m.latest.date}
-        Recovery: ${m.recoveryScore}/100
-        Sleep: ${m.latest.sleep_score}/100 (${(m.totalSleep / 60).toFixed(1)}h)
-        Deep Sleep: ${m.deepSleep}min
-        RHR: ${m.latest.hr_resting} bpm (Baseline: ${m.rhrBaseline})
-        HRV: ${m.estHRV} ms
-        Steps: ${m.latest.steps}
-        Strain: ${m.strainScore}
-        TSB: ${m.tsb} (ATL: ${m.atl}, CTL: ${m.ctl})
-        Workout Count Today: ${m.todayWorkouts.length}
-      `.trim();
-      };
-    
         {/* HERO SCORES */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
