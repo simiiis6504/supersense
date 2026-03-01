@@ -416,32 +416,23 @@ function WorkoutRow({w,onClick}:{w:Workout;onClick:()=>void}) {
   );
 }
 
-// Robust HR parser — handles "ts,hr", "ts,ts,hr", comma-only, and semicolon-separated formats
+// Zepp delta-encoded HR: "tsOffset,absoluteHR;tsOffset,delta;..." first segment = absolute, rest = deltas
 function parseHRPoints(raw: string): number[] {
   if (!raw) return [];
-  // Split by semicolons if present (Zepp format: "ts,hr;ts,hr;...")
-  const segs = raw.includes(';') ? raw.split(';') : [raw];
+  const segs = raw.split(';');
   const out: number[] = [];
+  let cur = 0; let first = true;
   for (const seg of segs) {
-    const parts = seg.trim().split(',');
-    // Walk backwards to find first value in 40-220 range (valid HR)
-    let found = false;
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const v = parseInt(parts[i], 10);
-      if (v >= 40 && v <= 220) { out.push(v); found = true; break; }
-    }
-    // If semicolons not present, raw might be pure comma list of HR values
-    if (!found && segs.length === 1 && parts.length > 10) {
-      // Try treating every value as a potential HR
-      for (const p of parts) {
-        const v = parseInt(p, 10);
-        if (v >= 40 && v <= 220) out.push(v);
-      }
-      break;
-    }
+    const t = seg.trim(); if (!t) continue;
+    const ci = t.indexOf(','); if (ci === -1) continue;
+    const val = parseInt(t.slice(ci + 1), 10); if (isNaN(val)) continue;
+    cur = first ? val : Math.max(30, Math.min(230, cur + val));
+    first = false;
+    out.push(cur);
   }
   return out;
 }
+
 
 function HRLineChart({ points, maxHR }: { points: number[]; maxHR: number }) {
   const [hovered, setHovered] = useState<number | null>(null);
