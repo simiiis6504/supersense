@@ -39,12 +39,13 @@ interface Workout {
   raw?: any;
 }
 
-// ─── HELPER: FORMATTED TEXT RENDERER (Fixes Build Error) ─────────────────────
+// ─── HELPER: FORMATTED TEXT RENDERER (Fixes Bold Issue) ──────────────────────
 function FormattedText({ text }: { text: string }) {
   if (!text) return null;
   return (
     <div className="space-y-2 text-sm leading-relaxed font-light text-zinc-300">
       {text.split('\n').filter(l => l.trim()).map((line, i) => {
+        // Simple parser for **bold** text
         const parts = line.split(/(\*\*.*?\*\*)/g);
         return (
           <p key={i} className={line.startsWith('-') || line.startsWith('•') ? 'pl-3' : ''}>
@@ -318,6 +319,7 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
   if (recoveryScore >= 85) insights.push(`Full recovery at ${recoveryScore}/100 — systems primed for high output today.`);
   else if (recoveryScore >= 65) insights.push(`Moderate recovery (${recoveryScore}/100). Aerobic work optimal; avoid maximal efforts.`);
   else insights.push(`Recovery at ${recoveryScore}/100 — accumulated fatigue detected. Prioritize sleep over training.`);
+  
   if (tsb < -10) insights.push(`High training fatigue (TSB ${tsb}). Recent load is heavy.`);
   else if (tsb > 10) insights.push(`Fresh & tapered (TSB +${tsb}).`);
 
@@ -592,56 +594,46 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const dist = getDistance(w);
   const pace = calcPace(w);
 
-  // 🟢 SMART PARSER: Finds the "HR-like" number in a messy string
-  // Zepp strings are like "1678888000, 145, 80" (Time, HR, Steps). 
-  // We need to pick '145' not '80'.
-  const parseSmartHR = (line: string, avgHr: number) => {
-    // 1. Split line into numbers
-    const values = line.split(',').map(Number).filter(v => !isNaN(v));
-    
-    // 2. Filter for reasonable HR range (e.g. 40 to 220)
-    // We also ignore the first value if it's huge (timestamp)
-    const candidates = values.filter((v, i) => {
-      if (i === 0 && v > 1000000000) return false; // Ignore timestamp
-      return v > 40 && v < 220; 
-    });
-
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
-
-    // 3. If multiple numbers exist (e.g. Cadence 160 vs HR 150), pick the one closest to the session Average HR.
-    // If Avg HR is missing/0, default to 120 as a safe aerobic baseline to compare against.
-    const target = avgHr > 0 ? avgHr : 120;
-    return candidates.reduce((prev, curr) => 
-      Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev
-    );
-  };
-
+  // 🟢 PARSING LOGIC FIX: Always prefer the 2nd value (Index 1) for HR.
+  // Zepp strings are typically: Timestamp, HR, [Steps/Cadence/etc]
+  // This avoids grabbing the last value which is often "Steps" on treadmills.
   const hrZones = useMemo(() => {
     if (!w.detail_heart_rate) return null;
     
-    // Use the smart parser on every data point
     const points = w.detail_heart_rate.split(';')
-      .map(p => parseSmartHR(p, w.avg_hr))
+      .map(p => {
+        const parts = p.split(',');
+        // If we have at least 2 parts (Timestamp, HR...), grab Index 1
+        if (parts.length >= 2) {
+          const val = Number(parts[1]);
+          // Basic sanity check: HR is usually > 35 and < 230
+          if (!isNaN(val) && val > 35 && val < 230) return val;
+        }
+        // Fallback: If messy data, try the last value (old behavior) but only if valid
+        const lastVal = Number(parts[parts.length - 1]);
+        if (!isNaN(lastVal) && lastVal > 35 && lastVal < 230) return lastVal;
+        
+        return null;
+      })
       .filter((v): v is number => v !== null);
 
     if (!points.length) return null;
 
     const zones = [0, 0, 0, 0, 0];
-    const MAX_HR = 199; // Standard 220-21 estimate
+    const MAX_HR = 199; // 220 - 21
     
     points.forEach(hr => {
       const pct = hr / MAX_HR;
-      if (pct < 0.60) zones[0]++;      // Z1 Recovery
-      else if (pct < 0.70) zones[1]++; // Z2 Aerobic
-      else if (pct < 0.80) zones[2]++; // Z3 Tempo
-      else if (pct < 0.90) zones[3]++; // Z4 Threshold
-      else zones[4]++;                 // Z5 Anaerobic
+      if (pct < 0.60) zones[0]++;      // Z1 < 119
+      else if (pct < 0.70) zones[1]++; // Z2 119-139
+      else if (pct < 0.80) zones[2]++; // Z3 139-159
+      else if (pct < 0.90) zones[3]++; // Z4 159-179
+      else zones[4]++;                 // Z5 179+
     });
 
     const total = points.length;
     return zones.map(z => Math.round(z / total * 100));
-  }, [w.detail_heart_rate, w.avg_hr]);
+  }, [w.detail_heart_rate]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
@@ -700,7 +692,18 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
               <h3 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-3">Heart Rate Timeline</h3>
               <div className="flex flex-wrap gap-[2px]">
                 {w.detail_heart_rate.split(';').map((p, i) => {
-                  const hr = parseSmartHR(p, w.avg_hr); // 🟢 Use Smart Parse here too
+                  // Apply SAME parsing logic for the visual dots
+                  let hr = null;
+                  const parts = p.split(',');
+                  if (parts.length >= 2) {
+                    const val = Number(parts[1]);
+                    if (!isNaN(val) && val > 35 && val < 230) hr = val;
+                  }
+                  if (!hr) {
+                    const lastVal = Number(parts[parts.length - 1]);
+                    if (!isNaN(lastVal) && lastVal > 35 && lastVal < 230) hr = lastVal;
+                  }
+
                   if (!hr) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
                   
                   const maxHr = 199;
