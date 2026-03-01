@@ -575,7 +575,7 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     const points = w.detail_heart_rate.split(';').map(p => { const parts = p.split(','); return parts.length >= 2 ? Number(parts[parts.length - 1]) : null; }).filter((v): v is number => v !== null && v > 40);
     if (!points.length) return null;
     const zones = [0, 0, 0, 0, 0];
-    const MAX_HR = 192; // 220 - your age (what's your age?)
+    const MAX_HR = 199; // 220 - your age (what's your age?)
     points.forEach(hr => {
       const pct = hr / MAX_HR;
       if (pct < 0.60) zones[0]++;       // Z1 < 115 bpm
