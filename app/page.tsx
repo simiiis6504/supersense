@@ -645,7 +645,29 @@ export default function SuperSenseDashboard() {
 
   const buildContext=(m:NonNullable<ReturnType<typeof computeMetrics>>)=>{
     const rp=m.racePredictions;
-    return `Recovery ${m.recoveryScore}/100 | RHR ${m.latest.hr_resting}bpm (baseline ${m.rhrBaseline}, delta ${m.rhrDelta>0?'+':''}${m.rhrDelta}) | HRV ${m.estHRV}ms | Sleep ${m.latest.sleep_score}/100 (${(m.totalSleep/60).toFixed(1)}h, deep ${m.deepSleep}min, REM ${m.remSleep}min) | Stress ${m.latest.stress_current}/100 | Steps ${(m.latest.steps||0).toLocaleString()} | Strain ${m.strainScore}/21 | TSB ${m.tsb} (ATL ${m.atl} / CTL ${m.ctl})${rp?` | Best 5K ${rp.fiveK.time}`:''}`;
+    const recentWorkouts=workouts.slice(0,10).map(w=>{
+      const dur=w.duration_minutes||Math.round((w.duration_seconds||0)/60);
+      const dist=w.distance_meters||w.distance||0;
+      const pace=dur&&dist>200?(dur/(dist/1000)).toFixed(2):null;
+      return`  ${(w.date||String(w.start_time||'')).slice(0,10)} ${w.type_name||w.type}: ${dur}min cal=${w.calories||0} avgHR=${w.avg_hr||'--'}${dist>0?' dist='+((dist/1000).toFixed(1))+'km':''}${pace?' pace='+pace+'/km':''}`;
+    }).join('\n');
+    return [
+      `ATHLETE PROFILE (use these exact numbers — do NOT substitute generic estimates):`,
+      `  Female, age 21, height 162cm, weight ~47kg`,
+      `  BMR = 1,216 kcal/day (Mifflin-St Jeor, verified). Do not use any other BMR estimate.`,
+      `  TDEE today = ${m.tdee} kcal (BMR ${m.BMR} + NEAT ${m.neat} + exercise ${m.exerciseBurn} + TEF ${Math.round(m.BMR*0.1)})`,
+      `  VO2max ~47 | Max HR 199 bpm (age 21) | 5K PR: 24:48 (4:58/km)`,
+      ``,
+      `TODAY (${m.latest.date}):`,
+      `  Recovery: ${m.recoveryScore}/100 | RHR: ${m.latest.hr_resting}bpm (baseline ${m.rhrBaseline}, delta ${m.rhrDelta>0?'+':''}${m.rhrDelta}) | HRV: ${m.estHRV}ms`,
+      `  Sleep: ${m.latest.sleep_score}/100 — ${(m.totalSleep/60).toFixed(1)}h total | deep ${m.deepSleep}min | REM ${m.remSleep}min`,
+      `  Stress: ${m.latest.stress_current}/100 | Steps: ${(m.latest.steps||0).toLocaleString()} | Strain: ${m.strainScore}/21`,
+      `  Training load: TSB ${m.tsb} (CTL ${m.ctl} − ATL ${m.atl})`,
+      rp?`  Race predictions: 5K ${rp.fiveK.time} (${rp.fiveK.pace}/km) | 10K ${rp.tenK.time} | HM ${rp.half.time}`:'',
+      ``,
+      `LAST 10 WORKOUTS:`,
+      recentWorkouts||'  None recorded',
+    ].filter(Boolean).join('\n');
   };
 
   const runAI=async(m:NonNullable<ReturnType<typeof computeMetrics>>)=>{
@@ -693,7 +715,16 @@ export default function SuperSenseDashboard() {
     setAiQueryAnswer('');
     try{
       const context=buildContext(m);
-      const res=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`You are an elite sports coach with access to this athlete's biometric data. Answer concisely and specifically — reference the actual numbers. No fluff.\n\nAthlete data: ${context}\n\nQuestion: ${question}`})});
+      const systemPrompt=[
+        `You are a precision sports coach. You MUST use ONLY the exact numbers provided below — never substitute with generic estimates or assumptions.`,
+        `If the data says BMR is 1,216 kcal, use 1,216. If weight is 47kg, use 47kg. If TDEE is X, use X.`,
+        `Be concise, direct, and specific. Reference the actual values. No generic advice.`,
+        ``,
+        context,
+        ``,
+        `QUESTION: ${question}`,
+      ].join('\n');
+      const res=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:systemPrompt})});
       const data=await res.json();
       if(data.error)throw new Error(data.error);
       setAiQueryAnswer(data.text||'No response.');
