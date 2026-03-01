@@ -39,6 +39,29 @@ interface Workout {
   raw?: any;
 }
 
+// ─── HELPER: FORMATTED TEXT RENDERER (Fixes Bold Issue) ──────────────────────
+function FormattedText({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <div className="space-y-2 text-sm leading-relaxed font-light text-zinc-300">
+      {text.split('\n').filter(l => l.trim()).map((line, i) => {
+        // Simple parser for **bold** text
+        const parts = line.split(/(\*\*.*?\*\*)/g);
+        return (
+          <p key={i} className={line.startsWith('-') || line.startsWith('•') ? 'pl-3' : ''}>
+            {parts.map((part, j) => {
+              if (part.startsWith('**') && part.endsWith('**')) {
+                return <strong key={j} className="font-black text-zinc-100">{part.slice(2, -2)}</strong>;
+              }
+              return <span key={j}>{part}</span>;
+            })}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── TOOLTIP COMPONENT ───────────────────────────────────────────────────────
 function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
   const [visible, setVisible] = useState(false);
@@ -117,7 +140,7 @@ const GLOSSARY: Record<string, string> = {
   RHR: 'Resting Heart Rate — measured during sleep. Lower is generally better for aerobic athletes.',
   HRV: 'Heart Rate Variability — Higher = better recovery. Low HRV can indicate stress or overtraining.',
   PAI: 'Personal Activity Intelligence — weekly score. 100+ is optimal for health.',
-  Recovery: 'Composite score based on sleep, stress, and RHR.',
+  Recovery: 'Composite score from sleep, stress, and RHR.',
   Strain: 'Daily training load (0–21). Combines workout intensity and daily steps.',
   SpO2: 'Blood Oxygen. 95%+ is normal.',
   TDEE: 'Total Daily Energy Expenditure = BMR + Activity + Exercise.',
@@ -253,10 +276,7 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
   
   const atl = Math.round(last7WorkoutCal / 7);
   const ctl = Math.round(last42WorkoutCal / 42);
-  
-  // 🟢 FIXED: TSB = Fitness (CTL) - Fatigue (ATL)
-  // Positive = Fresh. Negative = Fatigued.
-  const tsb = ctl - atl; 
+  const tsb = ctl - atl;
 
   const BMR = 1216;
   const neat = Math.round((latest.steps || 0) * 0.024);
@@ -294,12 +314,11 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
   const racePredictions = predictRaceTimes(workouts);
 
   const insights: string[] = [];
-  if (recoveryScore >= 85) insights.push(`Full recovery (${recoveryScore}) - Ready for load.`);
-  else if (recoveryScore >= 65) insights.push(`Moderate recovery (${recoveryScore}) - Aerobic work is fine.`);
-  else insights.push(`Low recovery (${recoveryScore}) - Prioritize sleep.`);
-  
-  if (tsb < -10) insights.push(`Fatigue high (TSB ${tsb}). Your 15km run pushed ATL up.`);
-  else if (tsb > 10) insights.push(`Fresh (TSB +${tsb}).`);
+  if (recoveryScore >= 85) insights.push(`Full recovery at ${recoveryScore}/100 — systems primed for high output today.`);
+  else if (recoveryScore >= 65) insights.push(`Moderate recovery (${recoveryScore}/100). Aerobic work optimal; avoid maximal efforts.`);
+  else insights.push(`Recovery at ${recoveryScore}/100 — accumulated fatigue detected. Prioritize sleep over training.`);
+  if (tsb < -10) insights.push(`High training fatigue (TSB ${tsb}). Recent load is heavy.`);
+  else if (tsb > 10) insights.push(`Fresh & tapered (TSB +${tsb}).`);
 
   return {
     latest, sorted, last7, last30, chartData,
@@ -724,79 +743,69 @@ export default function SuperSenseDashboard() {
 
   useEffect(() => { loadData(); const t = setInterval(loadData, 5 * 60 * 1000); return () => clearInterval(t); }, [loadData]);
 
-  // 🟢 FIXED: Explicitly highlight TODAY'S workouts for the AI so it doesn't miss them.
+  // 🟢 BUILD FULL CONTEXT (USER STATS + FULL HISTORY)
   const buildContext = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
-    const todaysWorkoutsSummary = m.todayWorkouts.length > 0 
-      ? m.todayWorkouts.map(w => `- ${getWorkoutName(w)}: ${getDurationMinutes(w)}min, ${w.calories}cal, Avg HR ${w.avg_hr}, Max HR ${w.max_hr}`).join('\n')
-      : "None";
+    // 1. Today's specifics
+    const todaysWorkouts = m.todayWorkouts.map(w => 
+      `- ${getWorkoutName(w)}: ${getDurationMinutes(w)}min, ${w.calories}kcal, AvgHR ${w.avg_hr}`
+    ).join('\n') || "None";
+
+    // 2. Condensed Workout History (Last 50 sessions)
+    const workoutHistory = workouts.slice(0, 50).map(w => 
+      `${w.date.slice(5)} ${w.type_name?.slice(0,10) || 'Work'}: ${Math.round(w.duration_minutes || 0)}m ${w.distance_meters ? (w.distance_meters/1000).toFixed(1)+'km' : ''} HR${w.avg_hr}`
+    ).join(' | ');
+
+    // 3. Health History (Last 30 days RHR/Sleep)
+    const healthHistory = m.chartData.map(d => 
+      `${d.date}: RHR${d.RHR} Slp${d.Sleep}h`
+    ).join(' | ');
 
     return `
-        Date: ${m.latest.date}
-        Recovery: ${m.recoveryScore}/100
-        Sleep: ${m.latest.sleep_score}/100 (${(m.totalSleep / 60).toFixed(1)}h)
-        Deep Sleep: ${m.deepSleep}min
-        RHR: ${m.latest.hr_resting} bpm (Baseline: ${m.rhrBaseline})
-        HRV: ${m.estHRV} ms
-        Steps: ${m.latest.steps}
-        Strain: ${m.strainScore}
-        TSB: ${m.tsb} (ATL: ${m.atl}, CTL: ${m.ctl})
-        
-        IMPORTANT - TODAY'S TRAINING:
-        ${todaysWorkoutsSummary}
-      `.trim();
+      USER PROFILE:
+      Female, 21 years old, 162cm, ~47kg. VO2 Max: 47 (Good).
+      
+      TODAY (${m.latest.date}):
+      - Recovery: ${m.recoveryScore}/100 | Resting HR: ${m.latest.hr_resting} bpm
+      - Sleep: ${m.latest.sleep_score}/100 (${(m.totalSleep/60).toFixed(1)}h total, ${m.deepSleep}m deep)
+      - Strain: ${m.strainScore}/21 | TSB: ${m.tsb} (Fitness ${m.ctl} - Fatigue ${m.atl})
+      - TODAY'S TRAINING:
+      ${todaysWorkouts}
+
+      RECENT HISTORY (Last 50 Sessions):
+      ${workoutHistory}
+
+      HEALTH TRENDS (Last 30 Days):
+      ${healthHistory}
+    `.trim();
   };
 
   const runAI = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     setAiLoading(true);
     try {
-      const rp = m.racePredictions;
-      const last7Days = new Date(); last7Days.setDate(last7Days.getDate() - 7);
-      
-      const recentWorkouts = workouts.filter(w => new Date(w.date || String(w.start_time)) >= last7Days).map(w => {
-        const dur = w.duration_minutes || Math.round((w.duration_seconds || 0) / 60);
-        const dist = w.distance_meters || w.distance || 0;
-        const pace = dur && dist > 200 ? (dur / (dist / 1000)).toFixed(2) : null;
-        return `${(w.date || '').slice(5)} ${w.type_name || w.type}: ${dur}min cal=${w.calories || 0} hr=${w.avg_hr || '--'}/${w.max_hr || '--'}${dist > 0 ? ' ' + ((dist / 1000).toFixed(1)) + 'km' : ''}${pace ? ' ' + pace + '/km' : ''}`;
-      }).join('\n');
+      const context = buildContext(m);
+      const prompt = `
+        You are an elite sports scientist and performance coach. 
+        You have access to the user's full training history and today's biomarkers.
+        
+        ${context}
 
-      const sleepTrend = m.last30.slice(-14).map(d => {
-        const deep = d.sleep_deep_minutes || d.deep_sleep_minutes || 0;
-        const rem = d.sleep_rem_minutes || d.rem_sleep_minutes || 0;
-        const total = d.sleep_total_minutes || (deep + rem + (d.sleep_light_minutes || d.shallow_sleep_minutes || 0));
-        return `${(d.date || '').slice(5)}: ${(total / 60).toFixed(1)}h score=${d.sleep_score || 0} deep=${deep}m rem=${rem}m`;
-      }).join('\n');
-
-      const rhrTrend = m.last30.slice(-14).filter(d => d.hr_resting > 0).map(d => `${(d.date || '').slice(5)}:${d.hr_resting}`).join(', ');
-      
-      // 🟢 FIXED: Explicitly grab today's summary for the prompt
-      const todaysActivity = m.todayWorkouts.length > 0 
-        ? `✅ ATHLETE TRAINED TODAY: ${m.todayWorkouts.length} sessions.\n` + m.todayWorkouts.map(w => `   - ${getWorkoutName(w)}: ${getDurationMinutes(w)}min, ${w.calories}kcal, AvgHR ${w.avg_hr}`).join('\n')
-        : "No workouts recorded yet today.";
-
-      const prompt = [
-        "You are an elite sports scientist and performance coach. Be direct, specific, and data-driven.",
-        `TODAY'S STATUS: Recovery ${m.recoveryScore}/100 | RHR ${m.latest.hr_resting}bpm (Base ${m.rhrBaseline}) | HRV ${m.estHRV}ms`,
-        `Sleep: ${m.latest.sleep_score}/100 | ${(m.totalSleep / 60).toFixed(1)}h (Deep ${m.deepSleep}m, REM ${m.remSleep}m)`,
-        `Training Load: Strain ${m.strainScore}/21 | TSB ${m.tsb} (Fitness ${m.ctl} - Fatigue ${m.atl})`,
-        `\nCRITICAL: LOOK AT TODAY'S ACTIVITY FIRST:\n${todaysActivity}`,
-        `\nRECENT HISTORY (Last 7 Days):\n${recentWorkouts || 'None'}`,
-        "14-DAY SLEEP:", sleepTrend, 
-        "14-DAY RHR:", rhrTrend,
-        rp ? `\nRUNNING PREDICTIONS: 5K ${rp.fiveK.time} | 10K ${rp.tenK.time} | Half ${rp.half.time}` : '',
-        "\n\nFormat:\n**Today:** [Specific advice based on Today's Activity & Recovery]\n\n**This Week:** [2-3 bullet points]\n\n**Watch:** [1 thing to monitor]",
-      ].join('\n');
+        Provide a daily briefing.
+        Format:
+        **Today:** [Specific advice based on TSB, Recovery, and today's completed workouts]
+        **This Week:** [2-3 bullet points on trend]
+        **Watch:** [1 specific metric to monitor]
+      `;
 
       const res = await fetch('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setAiMessage(data.text || m.insight);
-    } catch (err: any) { setAiMessage('AI error: ' + (err?.message || String(err)) + ' — ' + m.insight); }
+    } catch (err: any) { setAiMessage('AI error: ' + (err?.message || String(err))); }
     setAiLoading(false);
   };
 
   const runAIQuery = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     if (!aiQuery.trim()) return;
-
     const question = aiQuery;
     setAiQuery('');
     setAiQueryLoading(true);
@@ -804,14 +813,12 @@ export default function SuperSenseDashboard() {
 
     try {
       const context = buildContext(m);
-
       const res = await fetch('/api/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: `You are an elite sports coach. Answer concisely using this athlete's data.
-          
-          DATA CONTEXT:
+          prompt: `You are an elite sports coach. Answer concisely.
+          DATA:
           ${context}
           
           QUESTION:
@@ -825,7 +832,6 @@ export default function SuperSenseDashboard() {
     } catch (err: any) {
       setAiQueryAnswer('Error: ' + (err.message || 'Unknown error'));
     }
-
     setAiQueryLoading(false);
   };
 
@@ -876,12 +882,7 @@ export default function SuperSenseDashboard() {
           <div>
             <p className="text-[8px] font-black text-emerald-500/60 uppercase tracking-[0.25em] mb-1.5">{aiMessage ? 'Claude AI Analysis' : 'Local Analysis'}</p>
             {aiLoading ? <p className="text-zinc-600 text-sm animate-pulse">Analyzing biometric patterns...</p> : (
-              <div className="text-sm leading-relaxed font-light space-y-2">
-                {displayInsight.split('\n').filter(l => l.trim()).map((line, i) => {
-                  const renderBold = (text: string) => text.split(/\*\*(.*?)\*\*/g).map((part, j) => j % 2 === 1 ? <strong key={j} className="font-black text-zinc-100">{part}</strong> : <span key={j}>{part}</span>);
-                  return <p key={i} className={`text-zinc-300 ${line.startsWith('- ') || line.match(/^[•·–]/) ? 'pl-3' : ''}`}>{renderBold(line)}</p>;
-                })}
-              </div>
+              <FormattedText text={displayInsight} />
             )}
           </div>
         </div>
@@ -906,7 +907,7 @@ export default function SuperSenseDashboard() {
         {aiQueryAnswer && (
           <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
             <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">💬</div>
-            <div className="text-sm leading-relaxed text-zinc-300 font-light">{aiQueryAnswer}</div>
+            <FormattedText text={aiQueryAnswer} />
           </div>
         )}
 
@@ -916,7 +917,6 @@ export default function SuperSenseDashboard() {
             { value: recoveryScore, max: 100, color: '#10b981', label: 'Recovery', sub: `RHR ${latest.hr_resting || '--'} bpm · baseline ${rhrBaseline}`, glossaryKey: 'Recovery' },
             { value: strainScore, max: 21, color: '#818cf8', label: 'Strain', sub: `${todayWorkouts.length} sessions today`, glossaryKey: 'Strain' },
             { value: latest.sleep_score || 0, max: 100, color: '#c084fc', label: 'Sleep', sub: `${(totalSleep / 60).toFixed(1)}h · score` },
-            // 🟢 FIXED COLOR LOGIC: Green/Blue is fresh (positive), Red is fatigued (negative)
             { value: tsb, max: 50, color: tsb >= 0 ? '#38bdf8' : '#f43f5e', label: 'Form (TSB)', sub: `ATL ${atl} / CTL ${ctl}`, glossaryKey: 'TSB' },
           ].map((s, i) => (
             <div key={i} className="bg-zinc-900/50 border border-zinc-800/40 rounded-2xl py-6 flex justify-center hover:border-zinc-700/50 transition-all">
@@ -925,7 +925,7 @@ export default function SuperSenseDashboard() {
           ))}
         </div>
 
-        {/* QUICK STATS */}
+        {/* REST OF DASHBOARD (Quick Stats, Heatmap, Tabs, etc.) - Preserved */}
         <div className="grid grid-cols-3 md:grid-cols-6 gap-2.5">
           <MetricCard label="Steps" value={(latest.steps || 0).toLocaleString()} icon="👟" color={(latest.steps || 0) > 8000 ? '#10b981' : '#94a3b8'} sub={`Goal: 10k · ${Math.round((latest.steps || 0) / 100)}%`} />
           <MetricCard label="Calories" value={latest.calories || '--'} unit="kcal" icon="🔥" color="#fbbf24" />
@@ -935,9 +935,6 @@ export default function SuperSenseDashboard() {
           <MetricCard label="Body Temp" value={latest.body_temp || '--'} unit="°C" icon="🌡" color={latest.body_temp > 37.5 ? '#f43f5e' : '#94a3b8'} />
         </div>
 
-        {/* REST OF THE DASHBOARD... (Kept the same) */}
-        
-        {/* HR HEATMAP */}
         {(() => {
           const arr = latest.hr_today_array;
           const has = Array.isArray(arr) && arr.length > 0;
@@ -997,8 +994,6 @@ export default function SuperSenseDashboard() {
                       {tsb > 10 ? '✅ Tapered & fresh — peak performance window.' : tsb < -20 ? '⚠️ High fatigue — deload recommended.' : '📈 Productive Training.'}
                     </div>
                   </div>
-                  
-                  {/* ... (Rest of the components remain unchanged) ... */}
                   <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
                     <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500 mb-4">7-Day Averages</h3>
                     <div className="space-y-3">
@@ -1024,8 +1019,6 @@ export default function SuperSenseDashboard() {
                     </div>
                   </div>
                 </div>
-                
-                {/* ... Trend Charts ... */}
                 <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
                   <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500 mb-4">30-Day Biometric Trends · <span className="text-zinc-600 normal-case font-normal">hover bars for details</span></h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -1048,14 +1041,33 @@ export default function SuperSenseDashboard() {
                     })}
                   </div>
                 </div>
+                <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">Daily Steps · 30 Days</h3>
+                    <span className="text-[9px] text-zinc-500 font-black">7d avg {(avgSteps7 / 1000).toFixed(1)}k</span>
+                  </div>
+                  <InteractiveBarChart data={chartData} dataKey="Steps" color="#10b981" height={56} unit=" steps" />
+                  <div className="flex justify-between mt-1.5">
+                    {chartData.map((d, i) => <span key={i} className="text-[7px] text-zinc-700 font-bold">{d.date}</span>)}
+                  </div>
+                </div>
+                {chartData.some(d => d.HRV > 0) && (
+                  <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                    <div className="flex justify-between items-center mb-3">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">HRV · 30 Days</h3>
+                        <InfoBtn text={GLOSSARY.HRV} />
+                      </div>
+                      <span className="text-[9px] text-zinc-500 font-black">
+                        avg {Math.round(chartData.filter(d => d.HRV > 0).reduce((a, d) => a + d.HRV, 0) / chartData.filter(d => d.HRV > 0).length)}ms
+                      </span>
+                    </div>
+                    <InteractiveSparkLine data={chartData} dataKey="HRV" color="#fb923c" height={48} fill unit="ms" />
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Other tabs logic remains exactly the same as previous code, just wrapping up for brevity */}
-            {/* The core logic fixes were in computeMetrics, buildContext, runAI and the Hero Score display logic */}
-            {/* ... (Rest of Tabs: Training, Sleep, Metabolic, History) ... */}
-            
-            {/* TRAINING */}
             {tab === 'training' && (
               <div className="space-y-5">
                 {todayWorkouts.length > 0 && (
@@ -1073,7 +1085,7 @@ export default function SuperSenseDashboard() {
                             <div className="flex gap-4">
                               <div><p className="text-lg font-black text-zinc-100">{fmtDuration(dur)}</p></div>
                               {w.calories > 0 && <div><p className="text-lg font-black text-amber-400">{w.calories}<span className="text-[9px] text-zinc-500 ml-0.5">cal</span></p></div>}
-                              {w.avg_hr > 0 && <div><p className="text-lg font-black text-rose-400">{w.avg_hr}<span className="text-[9px] text-zinc-500 ml-0.5">bpm</span></p></div>}
+                              {w.avg_hr > 0 && <div><p className="text-lg font-black text-rose-400">{w.avg_hr}<span className="text-[9px] text-zinc-600 ml-0.5">bpm</span></p></div>}
                               {dist > 0 && <div><p className="text-lg font-black text-emerald-400">{(dist / 1000).toFixed(2)}<span className="text-[9px] text-zinc-500 ml-0.5">km</span></p></div>}
                               {pace && <div><p className="text-lg font-black text-sky-400">{fmtPace(pace)}<span className="text-[9px] text-zinc-500 ml-0.5">/km</span></p></div>}
                             </div>
@@ -1091,19 +1103,150 @@ export default function SuperSenseDashboard() {
                   {workouts.length === 0 ? <p className="text-zinc-600 text-sm text-center py-8">No workouts synced yet.</p> : (
                     <div className="space-y-0.5">
                       {workouts.slice(0, 30).map((w, i) => <WorkoutRow key={i} w={w} onClick={() => setSelectedWorkout(w)} />)}
+                      {workouts.length > 30 && <p className="text-center text-[9px] text-zinc-600 font-bold uppercase tracking-widest py-3">+ {workouts.length - 30} more sessions</p>}
                     </div>
                   )}
                 </div>
               </div>
             )}
 
-            {/* SLEEP, METABOLIC, HISTORY tabs omitted for brevity but should be pasted from previous full version if needed, 
-                as logic changes were confined to the top level */}
-             
-             {/* Note: I'm including a placeholder here for the rest of the tabs to ensure the code block is valid TSX. 
-                 In your actual file, you would keep the Sleep/Metabolic/History sections exactly as they were. 
-                 But for completeness of the FIX, here is the History tab again. */}
-                 
+            {tab === 'sleep' && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                  <div className="lg:col-span-2 bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                    <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500 mb-4">Last Night's Architecture</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                      {[
+                        { label: 'Deep', v: deepSleep, color: '#818cf8', desc: 'Physical repair', ideal: '15–25%' },
+                        { label: 'REM', v: remSleep, color: '#c084fc', desc: 'Memory & cognition', ideal: '20–25%' },
+                        { label: 'Light', v: lightSleep, color: '#475569', desc: 'Transition', ideal: '50–60%' },
+                        { label: 'Awake', v: wakeSleep, color: '#7f1d1d', desc: 'Disruptions', ideal: '<5%' },
+                      ].map(s => (
+                        <div key={s.label} className="text-center p-3 bg-zinc-800/40 rounded-xl border border-zinc-700/20">
+                          <div className="text-2xl font-black leading-none" style={{ color: s.color }}>{s.v || 0}</div>
+                          <div className="text-[8px] text-zinc-500 font-black uppercase mt-0.5">min</div>
+                          <div className="text-[10px] font-black mt-2 text-zinc-200">{s.label}</div>
+                          <div className="text-[8px] text-zinc-600 mt-0.5">{s.desc}</div>
+                          <div className="text-[7px] text-zinc-700 mt-1">ideal {s.ideal}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <SleepBar deep={deepSleep} rem={remSleep} light={lightSleep} wake={wakeSleep} />
+                    <div className="flex justify-between text-[8px] text-zinc-600 font-bold mt-1.5">
+                      <span>{latest.sleep_start_time ? new Date(latest.sleep_start_time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Bedtime'}</span>
+                      <span className="text-zinc-400 font-black">Total {(totalSleep / 60).toFixed(1)}h</span>
+                      <span>{latest.sleep_end_time ? new Date(latest.sleep_end_time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Wake'}</span>
+                    </div>
+                    <div className="mt-4 space-y-1.5 text-[10px] text-zinc-500 leading-relaxed">
+                      {deepSleep > 100 && <p className="text-emerald-400/80">✅ Excellent deep sleep — full physical recovery activated.</p>}
+                      {deepSleep < 60 && deepSleep > 0 && <p className="text-rose-400/80">⚠️ Deep sleep deficit — try magnesium glycinate 400mg before bed. No screens after 21:00.</p>}
+                      {remSleep < 70 && remSleep > 0 && <p className="text-violet-400/80">💭 Low REM — alcohol & late caffeine suppress REM. Target 20–25% of total sleep.</p>}
+                    </div>
+                  </div>
+                  <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex flex-col">
+                    <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500 mb-4">Quality</h3>
+                    <div className="flex justify-center my-4">
+                      <ScoreRing value={latest.sleep_score || 0} max={100} color="#c084fc" label="Sleep Score" sub={`7d avg ${avgSleep7}h`} size={110} />
+                    </div>
+                    <div className="space-y-3 mt-auto">
+                      {[
+                        { label: 'Deep %', value: totalSleep > 0 ? Math.round(deepSleep / totalSleep * 100) : 0, color: '#818cf8' },
+                        { label: 'REM %', value: totalSleep > 0 ? Math.round(remSleep / totalSleep * 100) : 0, color: '#c084fc' },
+                        { label: 'Efficiency', value: totalSleep > 0 ? Math.round((totalSleep - wakeSleep) / totalSleep * 100) : 0, color: '#10b981' },
+                      ].map(s => (
+                        <div key={s.label} className="space-y-1">
+                          <div className="flex justify-between text-[9px]">
+                            <span className="text-zinc-500 font-bold uppercase tracking-wider">{s.label}</span>
+                            <span className="font-black" style={{ color: s.color }}>{s.value}%</span>
+                          </div>
+                          <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${s.value}%`, backgroundColor: s.color, transition: 'width 1s ease' }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'metabolic' && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">Est. TDEE</h3>
+                      <InfoBtn text={GLOSSARY.TDEE} />
+                    </div>
+                    <div className="flex items-baseline gap-2 mb-5">
+                      <span className="text-5xl font-black tracking-tight text-zinc-100">{tdee.toLocaleString()}</span>
+                      <span className="text-zinc-500 font-bold">kcal</span>
+                    </div>
+                    <div className="space-y-3">
+                      {[
+                        { label: 'BMR', value: BMR, color: '#475569' },
+                        { label: 'TEF (10%)', value: Math.round(BMR * 0.1), color: '#1d4ed8' },
+                        { label: 'NEAT (steps)', value: neat, color: '#10b981', tip: GLOSSARY.NEAT },
+                        { label: 'Exercise', value: exerciseBurn, color: '#fbbf24' },
+                      ].map(s => (
+                        <div key={s.label} className="space-y-1">
+                          <div className="flex justify-between text-[9px]">
+                            <div className="flex items-center gap-1">
+                              <span className="text-zinc-500 font-bold uppercase tracking-wider">{s.label}</span>
+                              {(s as any).tip && <InfoBtn text={(s as any).tip} />}
+                            </div>
+                            <span className="text-zinc-300 font-black">{s.value.toLocaleString()} kcal</span>
+                          </div>
+                          <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${Math.round(s.value / tdee * 100)}%`, backgroundColor: s.color, transition: 'width 1s ease' }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-zinc-700 mt-3">BMR via Mifflin-St Jeor. NEAT = steps × 0.024kcal.</p>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">Blood Oxygen</h3>
+                        <InfoBtn text={GLOSSARY.SpO2} />
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-4xl font-black" style={{ color: latest.spo2_current >= 97 ? '#10b981' : latest.spo2_current >= 95 ? '#f59e0b' : '#f43f5e' }}>{latest.spo2_current || '--'}</span>
+                        <span className="text-zinc-500 font-bold text-lg">%</span>
+                        <span className="text-[9px] font-black uppercase ml-2" style={{ color: latest.spo2_current >= 97 ? '#10b981' : '#f59e0b' }}>{!latest.spo2_current ? '' : latest.spo2_current >= 97 ? 'Optimal' : latest.spo2_current >= 95 ? 'Slightly low' : 'Low — monitor'}</span>
+                      </div>
+                    </div>
+                    <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                      <div className="flex justify-between items-start mb-3">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">PAI Score</h3>
+                          <InfoBtn text={GLOSSARY.PAI} />
+                        </div>
+                        <Tag color={(latest.pai_total || 0) >= 100 ? '#10b981' : '#f59e0b'}>{(latest.pai_total || 0) >= 100 ? 'Optimal' : 'Below target'}</Tag>
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-4xl font-black text-emerald-400">{latest.pai_total || 0}</span>
+                        <span className="text-zinc-500">/ 100 target</span>
+                      </div>
+                      <p className="text-[9px] text-zinc-600 mt-1.5">Research: 100+ PAI weekly linked to reduced cardiovascular risk.</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <MetricCard label="Active Burn" value={exerciseBurn} unit="kcal" icon="🔥" color="#fbbf24" />
+                      <MetricCard label="NEAT" value={neat} unit="kcal" icon="🚶" color="#34d399" tooltip={GLOSSARY.NEAT} />
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
+                  <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500 mb-3">Active Calories · 30 Days</h3>
+                  <InteractiveBarChart data={chartData} dataKey="Calories" color="#fbbf24" height={56} unit=" kcal" />
+                  <div className="flex justify-between mt-1.5">
+                    {chartData.map((d, i) => <span key={i} className="text-[7px] text-zinc-700 font-bold">{d.date}</span>)}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {tab === 'history' && (
               <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5">
                 <div className="flex justify-between items-center mb-4">
@@ -1121,7 +1264,10 @@ export default function SuperSenseDashboard() {
                     </thead>
                     <tbody>
                       {[...sorted].reverse().map((d, i) => {
-                        const dTotal = d.sleep_total_minutes || ((d.sleep_deep_minutes || 0) + (d.sleep_rem_minutes || 0) + (d.sleep_light_minutes || 0));
+                        const dDeep = d.sleep_deep_minutes || d.deep_sleep_minutes || 0;
+                        const dRem = d.sleep_rem_minutes || d.rem_sleep_minutes || 0;
+                        const dLight = d.sleep_light_minutes || d.shallow_sleep_minutes || 0;
+                        const dTotal = d.sleep_total_minutes || (dDeep + dRem + dLight);
                         return (
                           <tr key={i} className="border-b border-zinc-800/20 hover:bg-zinc-800/20 transition-colors">
                             <td className="py-2 px-2 font-black text-zinc-400 whitespace-nowrap">{d.date}</td>
@@ -1129,11 +1275,11 @@ export default function SuperSenseDashboard() {
                             <td className="py-2 px-2 font-bold text-emerald-400">{d.steps ? (d.steps / 1000).toFixed(1) + 'k' : '--'}</td>
                             <td className="py-2 px-2 font-bold text-amber-400">{d.calories || '--'}</td>
                             <td className="py-2 px-2 font-bold text-violet-400">{dTotal ? (dTotal / 60).toFixed(1) + 'h' : '--'}</td>
-                            <td className="py-2 px-2 font-bold text-indigo-400">{d.sleep_deep_minutes || '--'}</td>
-                            <td className="py-2 px-2 font-bold text-purple-400">{d.sleep_rem_minutes || '--'}</td>
-                            <td className="py-2 px-2 font-black" style={{ color: (d.sleep_score || 0) > 80 ? '#10b981' : '#f59e0b' }}>{d.sleep_score || '--'}</td>
+                            <td className="py-2 px-2 font-bold text-indigo-400">{dDeep || '--'}</td>
+                            <td className="py-2 px-2 font-bold text-purple-400">{dRem || '--'}</td>
+                            <td className="py-2 px-2 font-black" style={{ color: (d.sleep_score || 0) > 80 ? '#10b981' : (d.sleep_score || 0) > 60 ? '#f59e0b' : '#f43f5e' }}>{d.sleep_score || '--'}</td>
                             <td className="py-2 px-2 font-bold text-cyan-400">{d.spo2_current || '--'}</td>
-                            <td className="py-2 px-2 font-bold" style={{ color: (d.stress_current || 0) < 40 ? '#10b981' : '#f59e0b' }}>{d.stress_current || '--'}</td>
+                            <td className="py-2 px-2 font-bold" style={{ color: (d.stress_current || 0) < 40 ? '#10b981' : (d.stress_current || 0) < 70 ? '#f59e0b' : '#f43f5e' }}>{d.stress_current || '--'}</td>
                             <td className="py-2 px-2 font-bold text-orange-400">{(d as any).hrv || '--'}</td>
                           </tr>
                         );
