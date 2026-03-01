@@ -39,29 +39,6 @@ interface Workout {
   raw?: any;
 }
 
-// ─── HELPER: FORMATTED TEXT RENDERER (Fixes Bold Issue) ──────────────────────
-function FormattedText({ text }: { text: string }) {
-  if (!text) return null;
-  return (
-    <div className="space-y-2 text-sm leading-relaxed font-light text-zinc-300">
-      {text.split('\n').filter(l => l.trim()).map((line, i) => {
-        // Simple parser for **bold** text
-        const parts = line.split(/(\*\*.*?\*\*)/g);
-        return (
-          <p key={i} className={line.startsWith('-') || line.startsWith('•') ? 'pl-3' : ''}>
-            {parts.map((part, j) => {
-              if (part.startsWith('**') && part.endsWith('**')) {
-                return <strong key={j} className="font-black text-zinc-100">{part.slice(2, -2)}</strong>;
-              }
-              return <span key={j}>{part}</span>;
-            })}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
 // ─── TOOLTIP COMPONENT ───────────────────────────────────────────────────────
 function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
   const [visible, setVisible] = useState(false);
@@ -594,33 +571,31 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const dist = getDistance(w);
   const pace = calcPace(w);
 
-  // 🟢 PARSING LOGIC FIX: Always prefer the 2nd value (Index 1) for HR.
-  // Zepp strings are typically: Timestamp, HR, [Steps/Cadence/etc]
-  // This avoids grabbing the last value which is often "Steps" on treadmills.
   const hrZones = useMemo(() => {
     if (!w.detail_heart_rate) return null;
     
-    const points = w.detail_heart_rate.split(';')
-      .map(p => {
-        const parts = p.split(',');
-        // If we have at least 2 parts (Timestamp, HR...), grab Index 1
-        if (parts.length >= 2) {
-          const val = Number(parts[1]);
-          // Basic sanity check: HR is usually > 35 and < 230
-          if (!isNaN(val) && val > 35 && val < 230) return val;
+    // 🟢 REVERTED & FIXED PARSING LOGIC (Handles Treadmill "Zone 1" Bug)
+    const points = w.detail_heart_rate.split(';').map(p => { 
+      const parts = p.split(',');
+      
+      // FIX: Treadmill data is often "Time, HR, Steps/Stride". 
+      // Original code took the *last* value (Steps), which often looks like low HR (Zone 1).
+      // We now prioritize the 2nd value (index 1) if it looks like a valid HR (40-230).
+      if (parts.length >= 2) {
+        const valAtIndex1 = Number(parts[1]);
+        if (!isNaN(valAtIndex1) && valAtIndex1 > 35 && valAtIndex1 < 230) {
+          return valAtIndex1;
         }
-        // Fallback: If messy data, try the last value (old behavior) but only if valid
-        const lastVal = Number(parts[parts.length - 1]);
-        if (!isNaN(lastVal) && lastVal > 35 && lastVal < 230) return lastVal;
-        
-        return null;
-      })
-      .filter((v): v is number => v !== null);
+      }
+      
+      // Fallback: If index 1 wasn't valid, take the last value (Classic behavior)
+      return parts.length >= 1 ? Number(parts[parts.length - 1]) : null; 
+    }).filter((v): v is number => v !== null && v > 35); // Filter out 0 or noise
 
     if (!points.length) return null;
 
     const zones = [0, 0, 0, 0, 0];
-    const MAX_HR = 199; // 220 - 21
+    const MAX_HR = 199; // 220 - 21 (Age)
     
     points.forEach(hr => {
       const pct = hr / MAX_HR;
@@ -692,19 +667,16 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
               <h3 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-3">Heart Rate Timeline</h3>
               <div className="flex flex-wrap gap-[2px]">
                 {w.detail_heart_rate.split(';').map((p, i) => {
-                  // Apply SAME parsing logic for the visual dots
-                  let hr = null;
                   const parts = p.split(',');
+                  // Apply SAME parsing logic here for the visual dots
+                  let hr = null;
                   if (parts.length >= 2) {
                     const val = Number(parts[1]);
                     if (!isNaN(val) && val > 35 && val < 230) hr = val;
                   }
-                  if (!hr) {
-                    const lastVal = Number(parts[parts.length - 1]);
-                    if (!isNaN(lastVal) && lastVal > 35 && lastVal < 230) hr = lastVal;
-                  }
-
-                  if (!hr) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
+                  if (!hr && parts.length >= 1) hr = Number(parts[parts.length - 1]);
+                  
+                  if (!hr || hr <= 35) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
                   
                   const maxHr = 199;
                   const color = hr / maxHr > 0.9 ? '#f43f5e' : hr / maxHr > 0.8 ? '#fb923c' : hr / maxHr > 0.7 ? '#fbbf24' : hr / maxHr > 0.6 ? '#60a5fa' : '#34d399';
@@ -957,7 +929,6 @@ export default function SuperSenseDashboard() {
             { value: recoveryScore, max: 100, color: '#10b981', label: 'Recovery', sub: `RHR ${latest.hr_resting || '--'} bpm · baseline ${rhrBaseline}`, glossaryKey: 'Recovery' },
             { value: strainScore, max: 21, color: '#818cf8', label: 'Strain', sub: `${todayWorkouts.length} sessions today`, glossaryKey: 'Strain' },
             { value: latest.sleep_score || 0, max: 100, color: '#c084fc', label: 'Sleep', sub: `${(totalSleep / 60).toFixed(1)}h · score` },
-            // 🟢 FIXED: TSB Color Logic (Green if Positive, Red if Negative)
             { value: tsb, max: 50, color: tsb >= 0 ? '#38bdf8' : '#f43f5e', label: 'Form (TSB)', sub: `ATL ${atl} / CTL ${ctl}`, glossaryKey: 'TSB' },
           ].map((s, i) => (
             <div key={i} className="bg-zinc-900/50 border border-zinc-800/40 rounded-2xl py-6 flex justify-center hover:border-zinc-700/50 transition-all">
@@ -1152,7 +1123,6 @@ export default function SuperSenseDashboard() {
                   {workouts.length === 0 ? <p className="text-zinc-600 text-sm text-center py-8">No workouts synced yet.</p> : (
                     <div className="space-y-0.5">
                       {workouts.slice(0, 30).map((w, i) => <WorkoutRow key={i} w={w} onClick={() => setSelectedWorkout(w)} />)}
-                      {workouts.length > 30 && <p className="text-center text-[9px] text-zinc-600 font-bold uppercase tracking-widest py-3">+ {workouts.length - 30} more sessions</p>}
                     </div>
                   )}
                 </div>
