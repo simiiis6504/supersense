@@ -585,52 +585,28 @@ function WorkoutRow({ w, onClick }: { w: Workout; onClick: () => void }) {
 }
 
 // ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
-
-// ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
 function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const name = getWorkoutName(w);
   const dur = getDurationMinutes(w);
   const dist = getDistance(w);
   const pace = calcPace(w);
-
   const hrZones = useMemo(() => {
     if (!w.detail_heart_rate) return null;
-    
-    // 🟢 REVERTED & FIXED PARSING LOGIC
-    const points = w.detail_heart_rate.split(';').map(p => { 
-      const parts = p.split(',');
-      
-      // FIX: Treadmill data is often "Time, HR, Steps". 
-      // Original code took the *last* value (Steps), which looked like low HR (Zone 1).
-      // We now prioritize the 2nd value (index 1) if it looks like a valid HR (40-220).
-      if (parts.length >= 2) {
-        const valAtIndex1 = Number(parts[1]);
-        if (!isNaN(valAtIndex1) && valAtIndex1 > 35 && valAtIndex1 < 230) {
-          return valAtIndex1;
-        }
-      }
-      
-      // Fallback: If index 1 wasn't valid, take the last value (Classic behavior)
-      return parts.length >= 1 ? Number(parts[parts.length - 1]) : null; 
-    }).filter((v): v is number => v !== null && v > 35); // Filter out 0 or noise
-
+    const points = w.detail_heart_rate.split(';').map(p => { const parts = p.split(','); return parts.length >= 2 ? Number(parts[parts.length - 1]) : null; }).filter((v): v is number => v !== null && v > 40);
     if (!points.length) return null;
-
     const zones = [0, 0, 0, 0, 0];
-    const MAX_HR = 199; // 220 - 21 (Age)
-    
+    const MAX_HR = 199; // 220 - your age (what's your age?)
     points.forEach(hr => {
       const pct = hr / MAX_HR;
-      if (pct < 0.60) zones[0]++;      // Z1 < 119
-      else if (pct < 0.70) zones[1]++; // Z2 119-139
-      else if (pct < 0.80) zones[2]++; // Z3 139-159
-      else if (pct < 0.90) zones[3]++; // Z4 159-179
-      else zones[4]++;                 // Z5 179+
+      if (pct < 0.60) zones[0]++;        // Z1 < 115 bpm
+      else if (pct < 0.70) zones[1]++; // Z2 115–134
+      else if (pct < 0.80) zones[2]++; // Z3 134–154
+      else if (pct < 0.90) zones[3]++; // Z4 154–173
+      else zones[4]++;                   // Z5 173+
     });
-
     const total = points.length;
     return zones.map(z => Math.round(z / total * 100));
-  }, [w.detail_heart_rate]);
+  }, [w.detail_heart_rate, w.max_hr]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
@@ -689,21 +665,11 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
               <h3 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-3">Heart Rate Timeline</h3>
               <div className="flex flex-wrap gap-[2px]">
                 {w.detail_heart_rate.split(';').map((p, i) => {
-                  const parts = p.split(',');
-                  // Apply SAME parsing logic here for the visual dots
-                  let hr = null;
-                  if (parts.length >= 2) {
-                    const val = Number(parts[1]);
-                    if (!isNaN(val) && val > 35 && val < 230) hr = val;
-                  }
-                  if (!hr && parts.length >= 1) hr = Number(parts[parts.length - 1]);
-                  
-                  if (!hr || hr <= 35) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
-                  
-                  const maxHr = 199;
+                  const parts = p.split(','); const hr = Number(parts[parts.length - 1]);
+                  if (!hr || hr <= 0) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
+                  const maxHr = w.max_hr || 190;
                   const color = hr / maxHr > 0.9 ? '#f43f5e' : hr / maxHr > 0.8 ? '#fb923c' : hr / maxHr > 0.7 ? '#fbbf24' : hr / maxHr > 0.6 ? '#60a5fa' : '#34d399';
                   const pct = hr / maxHr;
-                  
                   return <div key={i} title={`${hr} bpm`} style={{ width: 5, height: Math.max(8, pct * 28), borderRadius: 2, backgroundColor: color, alignSelf: 'flex-end' }} />;
                 })}
               </div>
@@ -725,6 +691,7 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     </div>
   );
 }
+
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 type TabId = 'overview' | 'training' | 'sleep' | 'metabolic' | 'history';
 
