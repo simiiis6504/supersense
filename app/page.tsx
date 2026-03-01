@@ -761,27 +761,21 @@ export default function SuperSenseDashboard() {
     setAiLoading(false);
   };
 
-  const runAIQuery = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
-  if (!aiQuery.trim()) return;
-  setAiLoading(true);
-  try {
-    const context = `Athlete biometrics today: Recovery ${m.recoveryScore}/100 | RHR ${m.latest.hr_resting}bpm (baseline ${m.rhrBaseline}, delta ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta}) | HRV ${m.estHRV}ms | Sleep ${m.latest.sleep_score}/100 (${(m.totalSleep/60).toFixed(1)}h, deep ${m.deepSleep}min, REM ${m.remSleep}min) | Stress ${m.latest.stress_current}/100 | Steps ${m.latest.steps?.toLocaleString()} | Strain ${m.strainScore}/21 | TSB ${m.tsb} (ATL ${m.atl} / CTL ${m.ctl}) | VO2max ${m.racePredictions?.vo2max || 'unknown'} | Best 5K ~24:48`;
-
-    const res = await fetch('/api/ai', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: `You are an elite sports coach. Answer concisely and specifically based on the data.\n\nAthlete data: ${context}\n\nQuestion: ${aiQuery}`
-      }),
-    });
-    const data = await res.json();
-    setAiQueryAnswer(data.text || data.error);
+   const runAIQuery=async(m:NonNullable<ReturnType<typeof computeMetrics>>)=>{
+    if(!aiQuery.trim())return;
+    const question=aiQuery;
     setAiQuery('');
-  } catch (err: any) {
-    setAiQueryAnswer('Error: ' + err.message);
-  }
-  setAiLoading(false);
-};
+    setAiQueryLoading(true);
+    setAiQueryAnswer('');
+    try{
+      const context=buildContext(m);
+      const res=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`You are an elite sports coach with access to this athlete's biometric data. Answer concisely and specifically — reference the actual numbers. No fluff.\n\nAthlete data: ${context}\n\nQuestion: ${question}`})});
+      const data=await res.json();
+      if(data.error)throw new Error(data.error);
+      setAiQueryAnswer(data.text||'No response.');
+    }catch(err:any){setAiQueryAnswer('Error: '+err.message);}
+    setAiQueryLoading(false);
+  };
 
   if (loading) return (
     <div className="min-h-screen bg-[#080809] flex items-center justify-center">
@@ -849,36 +843,27 @@ export default function SuperSenseDashboard() {
           </div>
         </div>
 
-        {/* AI COACH CHAT */}
-        <div className="space-y-3">
-          <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-4 flex gap-3 items-center">
-            <span className="text-base shrink-0">💬</span>
-            <input type="text" value={aiQuery} onChange={e=>setAiQuery(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&!aiQueryLoading&&runAIQuery(m)}
-              placeholder="Ask your coach... e.g. should I run today? what's my weak spot? how's my sleep trend?"
-              className="flex-1 bg-transparent text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none"/>
-            <button onClick={()=>runAIQuery(m)} disabled={aiQueryLoading||!aiQuery.trim()}
-              className="shrink-0 px-4 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30 whitespace-nowrap">
-              {aiQueryLoading?'...':'Ask'}
-            </button>
-          </div>
-          {(aiQueryLoading||aiQueryAnswer)&&(
-            <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
-              <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">🤖</div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[8px] font-black text-emerald-500/60 uppercase tracking-[0.25em] mb-1.5">Coach Reply</p>
-                {aiQueryLoading?<p className="text-zinc-600 text-sm animate-pulse">Thinking...</p>:(
-                  <div className="text-sm leading-relaxed font-light space-y-1.5">
-                    {aiQueryAnswer.split('\n').filter(l=>l.trim()).map((line,i)=>(
-                      <p key={i} className="text-zinc-300">{renderBold(line)}</p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+        <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-4 flex gap-3">
+        <input
+          type="text"
+          value={aiQuery}
+          onChange={e => setAiQuery(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && runAIQuery(m)}
+          placeholder="Ask your coach... e.g. should I run today? what's my weak point?"
+          className="flex-1 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 transition-colors"
+        />
+        <button onClick={() => runAIQuery(m)} disabled={aiLoading || !aiQuery.trim()}
+          className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30">
+          Ask
+        </button>
+      </div>
+      {aiQueryAnswer && (
+        <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
+          <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">💬</div>
+          <div className="text-sm leading-relaxed text-zinc-300 font-light">{aiQueryAnswer}</div>
         </div>
-        
+      )}
+    
         {/* HERO SCORES */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
