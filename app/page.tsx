@@ -565,50 +565,62 @@ function WorkoutRow({ w, onClick }: { w: Workout; onClick: () => void }) {
 }
 
 // ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
+// ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
 function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const name = getWorkoutName(w);
   const dur = getDurationMinutes(w);
   const dist = getDistance(w);
   const pace = calcPace(w);
 
+  // 🟢 SMART PARSER: Finds the "HR-like" number in a messy string
+  const parseSmartHR = (line: string, avgHr: number) => {
+    // 1. Split line into numbers
+    const values = line.split(',').map(Number).filter(v => !isNaN(v));
+    
+    // 2. Filter for reasonable HR range (e.g. 40 to 220)
+    // We also ignore the first value if it's huge (timestamp)
+    const candidates = values.filter((v, i) => {
+      // If it's the first number and huge, it's a timestamp -> ignore
+      if (i === 0 && v > 1000000000) return false; 
+      return v > 40 && v < 220; 
+    });
+
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    // 3. If multiple numbers exist (e.g. Cadence 160 vs HR 150), pick the one closest to the session Average HR.
+    // If Avg HR is missing/0, default to the largest value (safer for high intensity).
+    const target = avgHr > 0 ? avgHr : 120;
+    return candidates.reduce((prev, curr) => 
+      Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev
+    );
+  };
+
   const hrZones = useMemo(() => {
     if (!w.detail_heart_rate) return null;
     
-    // 🟢 REVERTED & FIXED PARSING LOGIC (Handles Treadmill "Zone 1" Bug)
-    const points = w.detail_heart_rate.split(';').map(p => { 
-      const parts = p.split(',');
-      
-      // FIX: Treadmill data is often "Time, HR, Steps/Stride". 
-      // Original code took the *last* value (Steps), which often looks like low HR (Zone 1).
-      // We now prioritize the 2nd value (index 1) if it looks like a valid HR (40-230).
-      if (parts.length >= 2) {
-        const valAtIndex1 = Number(parts[1]);
-        if (!isNaN(valAtIndex1) && valAtIndex1 > 35 && valAtIndex1 < 230) {
-          return valAtIndex1;
-        }
-      }
-      
-      // Fallback: If index 1 wasn't valid, take the last value (Classic behavior)
-      return parts.length >= 1 ? Number(parts[parts.length - 1]) : null; 
-    }).filter((v): v is number => v !== null && v > 35); // Filter out 0 or noise
+    // Use the smart parser on every data point
+    const points = w.detail_heart_rate.split(';')
+      .map(p => parseSmartHR(p, w.avg_hr))
+      .filter((v): v is number => v !== null);
 
     if (!points.length) return null;
 
     const zones = [0, 0, 0, 0, 0];
-    const MAX_HR = 199; // 220 - 21 (Age)
+    const MAX_HR = 199; // Standard 220-21 estimate
     
     points.forEach(hr => {
       const pct = hr / MAX_HR;
-      if (pct < 0.60) zones[0]++;      // Z1 < 119
-      else if (pct < 0.70) zones[1]++; // Z2 119-139
-      else if (pct < 0.80) zones[2]++; // Z3 139-159
-      else if (pct < 0.90) zones[3]++; // Z4 159-179
-      else zones[4]++;                 // Z5 179+
+      if (pct < 0.60) zones[0]++;      // Z1 Recovery
+      else if (pct < 0.70) zones[1]++; // Z2 Aerobic
+      else if (pct < 0.80) zones[2]++; // Z3 Tempo
+      else if (pct < 0.90) zones[3]++; // Z4 Threshold
+      else zones[4]++;                 // Z5 Anaerobic
     });
 
     const total = points.length;
     return zones.map(z => Math.round(z / total * 100));
-  }, [w.detail_heart_rate]);
+  }, [w.detail_heart_rate, w.avg_hr]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
@@ -667,16 +679,8 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
               <h3 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-3">Heart Rate Timeline</h3>
               <div className="flex flex-wrap gap-[2px]">
                 {w.detail_heart_rate.split(';').map((p, i) => {
-                  const parts = p.split(',');
-                  // Apply SAME parsing logic here for the visual dots
-                  let hr = null;
-                  if (parts.length >= 2) {
-                    const val = Number(parts[1]);
-                    if (!isNaN(val) && val > 35 && val < 230) hr = val;
-                  }
-                  if (!hr && parts.length >= 1) hr = Number(parts[parts.length - 1]);
-                  
-                  if (!hr || hr <= 35) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
+                  const hr = parseSmartHR(p, w.avg_hr); // 🟢 Use Smart Parse here too
+                  if (!hr) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
                   
                   const maxHr = 199;
                   const color = hr / maxHr > 0.9 ? '#f43f5e' : hr / maxHr > 0.8 ? '#fb923c' : hr / maxHr > 0.7 ? '#fbbf24' : hr / maxHr > 0.6 ? '#60a5fa' : '#34d399';
