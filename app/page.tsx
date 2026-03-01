@@ -585,28 +585,46 @@ function WorkoutRow({ w, onClick }: { w: Workout; onClick: () => void }) {
 }
 
 // ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
+
 function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const name = getWorkoutName(w);
   const dur = getDurationMinutes(w);
   const dist = getDistance(w);
   const pace = calcPace(w);
+
+  // Helper to safely extract HR from a data point string
+  const parseHR = (p: string) => {
+    const parts = p.split(',').map(Number).filter(n => !isNaN(n));
+    // Find the value that is most likely a heart rate (40-220 bpm)
+    // If multiple exist, prefer the one that isn't the first index (usually timestamp)
+    const hr = parts.find((v, i) => v > 40 && v < 220 && (parts.length === 1 || i > 0));
+    return hr || null;
+  };
+
   const hrZones = useMemo(() => {
     if (!w.detail_heart_rate) return null;
-    const points = w.detail_heart_rate.split(';').map(p => { const parts = p.split(','); return parts.length >= 2 ? Number(parts[parts.length - 1]) : null; }).filter((v): v is number => v !== null && v > 40);
+    
+    const points = w.detail_heart_rate.split(';')
+      .map(parseHR)
+      .filter((v): v is number => v !== null);
+
     if (!points.length) return null;
+
     const zones = [0, 0, 0, 0, 0];
-    const MAX_HR = 199; // 220 - your age (what's your age?)
+    const MAX_HR = 220 - 21; // Estimate max HR for 21yo = 199 bpm
+    
     points.forEach(hr => {
       const pct = hr / MAX_HR;
-      if (pct < 0.60) zones[0]++;        // Z1 < 115 bpm
-      else if (pct < 0.70) zones[1]++; // Z2 115–134
-      else if (pct < 0.80) zones[2]++; // Z3 134–154
-      else if (pct < 0.90) zones[3]++; // Z4 154–173
-      else zones[4]++;                   // Z5 173+
+      if (pct < 0.60) zones[0]++;      // Z1 Recovery
+      else if (pct < 0.70) zones[1]++; // Z2 Aerobic
+      else if (pct < 0.80) zones[2]++; // Z3 Tempo
+      else if (pct < 0.90) zones[3]++; // Z4 Threshold
+      else zones[4]++;                 // Z5 Anaerobic
     });
+
     const total = points.length;
     return zones.map(z => Math.round(z / total * 100));
-  }, [w.detail_heart_rate, w.max_hr]);
+  }, [w.detail_heart_rate]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
@@ -665,11 +683,19 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
               <h3 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-3">Heart Rate Timeline</h3>
               <div className="flex flex-wrap gap-[2px]">
                 {w.detail_heart_rate.split(';').map((p, i) => {
-                  const parts = p.split(','); const hr = Number(parts[parts.length - 1]);
-                  if (!hr || hr <= 0) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
-                  const maxHr = w.max_hr || 190;
-                  const color = hr / maxHr > 0.9 ? '#f43f5e' : hr / maxHr > 0.8 ? '#fb923c' : hr / maxHr > 0.7 ? '#fbbf24' : hr / maxHr > 0.6 ? '#60a5fa' : '#34d399';
+                  const hr = parseHR(p);
+                  if (!hr) return <div key={i} style={{ width: 5, height: 20, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.04)' }} />;
+                  
+                  // Use standard max HR (199) for color scale consistency
+                  const maxHr = 199; 
                   const pct = hr / maxHr;
+                  
+                  let color = '#34d399'; // Z1
+                  if (pct > 0.9) color = '#f43f5e';      // Z5 Red
+                  else if (pct > 0.8) color = '#fb923c'; // Z4 Orange
+                  else if (pct > 0.7) color = '#fbbf24'; // Z3 Yellow
+                  else if (pct > 0.6) color = '#60a5fa'; // Z2 Blue
+
                   return <div key={i} title={`${hr} bpm`} style={{ width: 5, height: Math.max(8, pct * 28), borderRadius: 2, backgroundColor: color, alignSelf: 'flex-end' }} />;
                 })}
               </div>
@@ -691,7 +717,6 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     </div>
   );
 }
-
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 type TabId = 'overview' | 'training' | 'sleep' | 'metabolic' | 'history';
 
