@@ -575,8 +575,15 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     const points = w.detail_heart_rate.split(';').map(p => { const parts = p.split(','); return parts.length >= 2 ? Number(parts[parts.length - 1]) : null; }).filter((v): v is number => v !== null && v > 40);
     if (!points.length) return null;
     const zones = [0, 0, 0, 0, 0];
-    const maxHr = 195; // or better: 220 - age. For you ~195 based on fitness level
-    points.forEach(hr => { const pct = hr / maxHr; if (pct < 0.6) zones[0]++; else if (pct < 0.7) zones[1]++; else if (pct < 0.8) zones[2]++; else if (pct < 0.9) zones[3]++; else zones[4]++; });
+    const MAX_HR = 192; // 220 - your age (what's your age?)
+    points.forEach(hr => {
+      const pct = hr / MAX_HR;
+      if (pct < 0.60) zones[0]++;       // Z1 < 115 bpm
+      else if (pct < 0.70) zones[1]++; // Z2 115–134
+      else if (pct < 0.80) zones[2]++; // Z3 134–154
+      else if (pct < 0.90) zones[3]++; // Z4 154–173
+      else zones[4]++;                  // Z5 173+
+    });
     const total = points.length;
     return zones.map(z => Math.round(z / total * 100));
   }, [w.detail_heart_rate, w.max_hr]);
