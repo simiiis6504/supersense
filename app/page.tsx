@@ -721,6 +721,7 @@ export default function SuperSenseDashboard() {
 
   const [aiQuery, setAiQuery] = useState('');
   const [aiQueryAnswer, setAiQueryAnswer] = useState('');
+  const [aiQueryLoading, setAiQueryLoading] = useState(false);
   
   const runAI = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     setAiLoading(true);
@@ -761,30 +762,41 @@ export default function SuperSenseDashboard() {
     setAiLoading(false);
   };
 
-   const runAIQuery=async(m:NonNullable<ReturnType<typeof computeMetrics>>)=>{
-    if(!aiQuery.trim())return;
-    const question=aiQuery;
+   const runAIQuery = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
+    if (!aiQuery.trim()) return;
+    
+    const question = aiQuery;
     setAiQuery('');
-    setAiQueryLoading(true);
+    setAiQueryLoading(true); // Now this works because we defined the state
     setAiQueryAnswer('');
-    try{
-      const context=buildContext(m);
-      const res=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`You are an elite sports coach with access to this athlete's biometric data. Answer concisely and specifically — reference the actual numbers. No fluff.\n\nAthlete data: ${context}\n\nQuestion: ${question}`})});
-      const data=await res.json();
-      if(data.error)throw new Error(data.error);
-      setAiQueryAnswer(data.text||'No response.');
-    }catch(err:any){setAiQueryAnswer('Error: '+err.message);}
+    
+    try {
+      // Now this works because we defined the function
+      const context = buildContext(m); 
+      
+      const res = await fetch('/api/ai', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          prompt: `You are an elite sports coach. Answer concisely using this athlete's data.
+          
+          DATA:
+          ${context}
+          
+          QUESTION:
+          ${question}` 
+        }) 
+      });
+
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setAiQueryAnswer(data.text || 'No response.');
+    } catch (err: any) {
+      setAiQueryAnswer('Error: ' + (err.message || 'Unknown error'));
+    }
+    
     setAiQueryLoading(false);
   };
-
-  if (loading) return (
-    <div className="min-h-screen bg-[#080809] flex items-center justify-center">
-      <div className="text-center space-y-4">
-        <div className="w-10 h-10 rounded-full border border-emerald-500/30 border-t-emerald-500 animate-spin mx-auto" />
-        <p className="text-[9px] font-black tracking-[0.4em] uppercase text-zinc-600 animate-pulse">Loading</p>
-      </div>
-    </div>
-  );
 
   const m = computeMetrics(dailyData, workouts);
   if (!m) return <div className="min-h-screen bg-[#080809] flex items-center justify-center text-zinc-600 text-sm">No data yet.</div>;
@@ -852,17 +864,34 @@ export default function SuperSenseDashboard() {
           placeholder="Ask your coach... e.g. should I run today? what's my weak point?"
           className="flex-1 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 transition-colors"
         />
-        <button onClick={() => runAIQuery(m)} disabled={aiLoading || !aiQuery.trim()}
-          className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30">
-          Ask
-        </button>
-      </div>
+        <button 
+        onClick={() => runAIQuery(m)} 
+        disabled={aiQueryLoading || !aiQuery.trim()} // Changed from aiLoading to aiQueryLoading
+        className="..."
+      >
+        {aiQueryLoading ? '...' : 'Ask'} {/* Optional: Add visual feedback */}
+      </button>
       {aiQueryAnswer && (
         <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
           <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">💬</div>
           <div className="text-sm leading-relaxed text-zinc-300 font-light">{aiQueryAnswer}</div>
         </div>
       )}
+
+        const buildContext = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
+      return `
+        Date: ${m.latest.date}
+        Recovery: ${m.recoveryScore}/100
+        Sleep: ${m.latest.sleep_score}/100 (${(m.totalSleep / 60).toFixed(1)}h)
+        Deep Sleep: ${m.deepSleep}min
+        RHR: ${m.latest.hr_resting} bpm (Baseline: ${m.rhrBaseline})
+        HRV: ${m.estHRV} ms
+        Steps: ${m.latest.steps}
+        Strain: ${m.strainScore}
+        TSB: ${m.tsb} (ATL: ${m.atl}, CTL: ${m.ctl})
+        Workout Count Today: ${m.todayWorkouts.length}
+      `.trim();
+      };
     
         {/* HERO SCORES */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
