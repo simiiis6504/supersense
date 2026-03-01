@@ -39,6 +39,28 @@ interface Workout {
   raw?: any;
 }
 
+// ─── HELPER: FORMATTED TEXT RENDERER (Fixes Build Error) ─────────────────────
+function FormattedText({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <div className="space-y-2 text-sm leading-relaxed font-light text-zinc-300">
+      {text.split('\n').filter(l => l.trim()).map((line, i) => {
+        const parts = line.split(/(\*\*.*?\*\*)/g);
+        return (
+          <p key={i} className={line.startsWith('-') || line.startsWith('•') ? 'pl-3' : ''}>
+            {parts.map((part, j) => {
+              if (part.startsWith('**') && part.endsWith('**')) {
+                return <strong key={j} className="font-black text-zinc-100">{part.slice(2, -2)}</strong>;
+              }
+              return <span key={j}>{part}</span>;
+            })}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── TOOLTIP COMPONENT ───────────────────────────────────────────────────────
 function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
   const [visible, setVisible] = useState(false);
@@ -296,7 +318,6 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
   if (recoveryScore >= 85) insights.push(`Full recovery at ${recoveryScore}/100 — systems primed for high output today.`);
   else if (recoveryScore >= 65) insights.push(`Moderate recovery (${recoveryScore}/100). Aerobic work optimal; avoid maximal efforts.`);
   else insights.push(`Recovery at ${recoveryScore}/100 — accumulated fatigue detected. Prioritize sleep over training.`);
-  
   if (tsb < -10) insights.push(`High training fatigue (TSB ${tsb}). Recent load is heavy.`);
   else if (tsb > 10) insights.push(`Fresh & tapered (TSB +${tsb}).`);
 
@@ -565,7 +586,6 @@ function WorkoutRow({ w, onClick }: { w: Workout; onClick: () => void }) {
 }
 
 // ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
-// ─── WORKOUT MODAL ────────────────────────────────────────────────────────────
 function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const name = getWorkoutName(w);
   const dur = getDurationMinutes(w);
@@ -573,6 +593,8 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
   const pace = calcPace(w);
 
   // 🟢 SMART PARSER: Finds the "HR-like" number in a messy string
+  // Zepp strings are like "1678888000, 145, 80" (Time, HR, Steps). 
+  // We need to pick '145' not '80'.
   const parseSmartHR = (line: string, avgHr: number) => {
     // 1. Split line into numbers
     const values = line.split(',').map(Number).filter(v => !isNaN(v));
@@ -580,8 +602,7 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     // 2. Filter for reasonable HR range (e.g. 40 to 220)
     // We also ignore the first value if it's huge (timestamp)
     const candidates = values.filter((v, i) => {
-      // If it's the first number and huge, it's a timestamp -> ignore
-      if (i === 0 && v > 1000000000) return false; 
+      if (i === 0 && v > 1000000000) return false; // Ignore timestamp
       return v > 40 && v < 220; 
     });
 
@@ -589,7 +610,7 @@ function WorkoutModal({ w, onClose }: { w: Workout; onClose: () => void }) {
     if (candidates.length === 1) return candidates[0];
 
     // 3. If multiple numbers exist (e.g. Cadence 160 vs HR 150), pick the one closest to the session Average HR.
-    // If Avg HR is missing/0, default to the largest value (safer for high intensity).
+    // If Avg HR is missing/0, default to 120 as a safe aerobic baseline to compare against.
     const target = avgHr > 0 ? avgHr : 120;
     return candidates.reduce((prev, curr) => 
       Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev
@@ -933,6 +954,7 @@ export default function SuperSenseDashboard() {
             { value: recoveryScore, max: 100, color: '#10b981', label: 'Recovery', sub: `RHR ${latest.hr_resting || '--'} bpm · baseline ${rhrBaseline}`, glossaryKey: 'Recovery' },
             { value: strainScore, max: 21, color: '#818cf8', label: 'Strain', sub: `${todayWorkouts.length} sessions today`, glossaryKey: 'Strain' },
             { value: latest.sleep_score || 0, max: 100, color: '#c084fc', label: 'Sleep', sub: `${(totalSleep / 60).toFixed(1)}h · score` },
+            // 🟢 FIXED: TSB Color Logic (Green if Positive, Red if Negative)
             { value: tsb, max: 50, color: tsb >= 0 ? '#38bdf8' : '#f43f5e', label: 'Form (TSB)', sub: `ATL ${atl} / CTL ${ctl}`, glossaryKey: 'TSB' },
           ].map((s, i) => (
             <div key={i} className="bg-zinc-900/50 border border-zinc-800/40 rounded-2xl py-6 flex justify-center hover:border-zinc-700/50 transition-all">
@@ -1127,6 +1149,7 @@ export default function SuperSenseDashboard() {
                   {workouts.length === 0 ? <p className="text-zinc-600 text-sm text-center py-8">No workouts synced yet.</p> : (
                     <div className="space-y-0.5">
                       {workouts.slice(0, 30).map((w, i) => <WorkoutRow key={i} w={w} onClick={() => setSelectedWorkout(w)} />)}
+                      {workouts.length > 30 && <p className="text-center text-[9px] text-zinc-600 font-bold uppercase tracking-widest py-3">+ {workouts.length - 30} more sessions</p>}
                     </div>
                   )}
                 </div>
