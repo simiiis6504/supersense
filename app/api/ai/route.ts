@@ -21,6 +21,13 @@ export async function POST(req: NextRequest) {
 
     messages.push({ role: 'user', content: prompt });
 
+    const bodyToSend = JSON.stringify({
+  model: 'openai-large',
+  messages,
+  temperature: 0.7,
+});
+console.log("SENDING TO API:", bodyToSend);
+
     const res = await fetch('https://g4f.space/api/pollinations/chat/completions', {
       method: 'POST',
       headers: {
