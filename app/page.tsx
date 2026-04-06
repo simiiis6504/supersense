@@ -683,23 +683,36 @@ export default function SuperSenseDashboard() {
   const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
 
   const loadData = useCallback(async () => {
-    const [{ data: liveHealth }, { data: histActivity }, { data: histSleep }, { data: detailedWorkouts }] = await Promise.all([
+    // Fetch from all tables, removing the broken 'active_minutes' column from daily_activity
+    const [healthRes, activityRes, sleepRes, workoutsRes] = await Promise.all([
       supabase.from('daily_health').select('*').order('date', { ascending: true }).limit(365),
-      supabase.from('daily_activity').select('date, steps, calories, distance, active_minutes').order('date', { ascending: true }).limit(365),
+      supabase.from('daily_activity').select('date, steps, calories, distance').order('date', { ascending: true }).limit(365),
       supabase.from('daily_sleep').select('*').order('date', { ascending: true }).limit(365),
       supabase.from('detailed_workouts').select('*').order('start_time', { ascending: false }).limit(500),
     ]);
+
+    // Log any errors so we can debug them in the console, but don't let them crash the app
+    if (activityRes.error) console.warn("Activity table sync warning:", activityRes.error.message);
+    if (sleepRes.error) console.warn("Sleep table sync warning:", sleepRes.error.message);
+
     const map = new Map<string, DailyHealth>();
+    
     const mergeInto = (items: any[], overwrite = false) => {
       items?.forEach(item => {
         if (!item.date) return;
         const existing = map.get(item.date) || {} as any;
         const merged: any = { ...existing };
-        Object.entries(item).forEach(([k, v]) => { if (v !== null && v !== undefined && v !== 0 && v !== '') { if (overwrite || !merged[k]) merged[k] = v; } });
+        Object.entries(item).forEach(([k, v]) => { 
+          if (v !== null && v !== undefined && v !== 0 && v !== '') { 
+            if (overwrite || !merged[k]) merged[k] = v; 
+          } 
+        });
         map.set(item.date, merged);
       });
     };
-    const normalizedSleep = (histSleep || []).map((s: any) => ({
+
+    // Normalize sleep fields just in case they come from daily_sleep instead of daily_health
+    const normalizedSleep = (sleepRes.data || []).map((s: any) => ({
       ...s,
       sleep_deep_minutes: s.sleep_deep_minutes || s.deep_sleep_minutes || 0,
       sleep_rem_minutes: s.sleep_rem_minutes || s.rem_sleep_minutes || 0,
@@ -707,9 +720,14 @@ export default function SuperSenseDashboard() {
       sleep_wake_minutes: s.sleep_wake_minutes || s.wake_minutes || 0,
       sleep_total_minutes: s.sleep_total_minutes || s.total_sleep_minutes || ((s.deep_sleep_minutes || 0) + (s.rem_sleep_minutes || 0) + (s.shallow_sleep_minutes || 0)),
     }));
-    mergeInto(normalizedSleep); mergeInto(histActivity || []); mergeInto(liveHealth || [], true);
+
+    // Merge in order of priority (daily_health takes precedence as it's the master table)
+    mergeInto(normalizedSleep); 
+    mergeInto(activityRes.data || []); 
+    mergeInto(healthRes.data || [], true);
+
     setDailyData(Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date)));
-    setWorkouts(detailedWorkouts || []);
+    setWorkouts(workoutsRes.data || []);
     setSyncTime(new Date().toLocaleTimeString());
     setLoading(false);
   }, []);
