@@ -734,55 +734,6 @@ export default function SuperSenseDashboard() {
 
   useEffect(() => { loadData(); const t = setInterval(loadData, 5 * 60 * 1000); return () => clearInterval(t); }, [loadData]);
 
-  const buildSystemPrompt = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
-    const rp = m.racePredictions;
-    const last14Sleep = m.last30.slice(-14).map(d => {
-      const deep = d.sleep_deep_minutes || d.deep_sleep_minutes || 0;
-      const rem = d.sleep_rem_minutes || d.rem_sleep_minutes || 0;
-      const total = d.sleep_total_minutes || (deep + rem + (d.sleep_light_minutes || d.shallow_sleep_minutes || 0));
-      return `${(d.date||'').slice(5)}: ${(total/60).toFixed(1)}h score=${d.sleep_score||0} deep=${deep}m rem=${rem}m`;
-    }).join('\n');
-    const rhrTrend = m.last30.slice(-14).filter(d => d.hr_resting > 0).map(d => `${(d.date||'').slice(5)}:${d.hr_resting}`).join(', ');
-    const last7d = new Date(); last7d.setDate(last7d.getDate() - 7);
-    const recentWorkoutsSummary = workouts.filter(w => new Date(w.date || String(w.start_time)) >= last7d).map(w => {
-      const dur = w.duration_minutes || Math.round((w.duration_seconds || 0) / 60);
-      const dist = w.distance_meters || w.distance || 0;
-      const pace = dur && dist > 200 ? (dur / (dist / 1000)).toFixed(2) : null;
-      return `${(w.date || '').slice(5)} ${w.type_name || w.type}: ${dur}min cal=${w.calories||0} hr=${w.avg_hr||'--'}/${w.max_hr||'--'}${dist > 0 ? ' '+((dist/1000).toFixed(1))+'km' : ''}${pace ? ' '+pace+'/km' : ''}`;
-    }).join('\n');
-
-    return [
-      "You are an elite sports scientist, performance coach, and personal health advisor for this specific athlete. You have deep knowledge of their biometric data and history. Reference actual numbers in every response. Be direct, specific, and coach-like — not generic.",
-      "",
-      `## ATHLETE PROFILE`,
-      `Weight: 47kg | Device: Amazfit Balance | Platform: SuperSense (custom Whoop-equivalent)`,
-      `RHR Baseline: ${m.rhrBaseline}bpm (10th percentile of last 90 days)`,
-      rp ? `Best running pace: ${rp.bestPace.toFixed(2)}/km | Predicted 5K: ${rp.fiveK.time} | 10K: ${rp.tenK.time} | Half: ${rp.half.time}` : '',
-      "",
-      `## TODAY'S STATUS (${m.latest.date})`,
-      `Recovery: ${m.recoveryScore}/100 | Strain: ${m.strainScore}/21 | Sleep Score: ${m.latest.sleep_score}/100`,
-      `RHR: ${m.latest.hr_resting}bpm (delta: ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta} from baseline)`,
-      `HRV: ${m.estHRV}ms | SpO2: ${m.latest.spo2_current}% | Stress: ${m.latest.stress_current}/100`,
-      `Sleep: ${(m.totalSleep/60).toFixed(1)}h total | Deep: ${m.deepSleep}min | REM: ${m.remSleep}min | Wake: ${m.wakeSleep}min`,
-      `Steps: ${(m.latest.steps||0).toLocaleString()} | Calories: ${m.latest.calories} | Body Temp: ${m.latest.body_temp}°C`,
-      `PAI Total: ${m.latest.pai_total} | TSB: ${m.tsb} (ATL: ${m.atl} / CTL: ${m.ctl})`,
-      "",
-      `## 14-DAY SLEEP TREND`,
-      last14Sleep,
-      "",
-      `## 14-DAY RHR TREND`,
-      rhrTrend,
-      "",
-      `## LAST 7 DAYS WORKOUTS`,
-      recentWorkoutsSummary || 'No workouts logged',
-      "",
-      `## 7-DAY AVERAGES`,
-      `Avg RHR: ${m.avgRHR7}bpm | Avg Steps: ${(m.avgSteps7/1000).toFixed(1)}k | Avg Sleep: ${m.avgSleep7}h`,
-      "",
-      "Answer concisely. Reference specific numbers from the data. Remember everything discussed in this conversation.",
-    ].filter(Boolean).join('\n');
-  };
-
    const buildSystemPrompt = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     const rp = m.racePredictions;
     const last14Sleep = m.last30.slice(-14).map(d => {
