@@ -427,6 +427,64 @@ function Ring({ pct, color, size = 96, strokeW = 8 }: { pct: number; color: stri
   );
 }
 
+// ─── WHOOP-STYLE BIG RING ────────────────────────────────────────────────────
+function WhoopRing({ value, max, color, trackColor, label, status, sub, size = 140 }: {
+  value: number; max: number; color: string; trackColor: string;
+  label: string; status: string; sub?: string; size?: number;
+}) {
+  const strokeW = size * 0.115;
+  const r = (size - strokeW) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.min(Math.max(value / max, 0), 1);
+  const offset = c * (1 - pct);
+  return (
+    <div className="flex flex-col items-center gap-2.5">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', display: 'block' }}>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={trackColor} strokeWidth={strokeW} />
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={strokeW}
+            strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 1.4s cubic-bezier(0.34,1.56,0.64,1)' }} />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5">
+          <span className="font-black leading-none tracking-tight text-zinc-100" style={{ fontSize: size * 0.22 }}>
+            {isNaN(value) ? '--' : value}
+          </span>
+          <span className="font-black uppercase tracking-widest" style={{ fontSize: size * 0.075, color }}>{status}</span>
+        </div>
+      </div>
+      <div className="text-center">
+        <p className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-400">{label}</p>
+        {sub && <p className="text-[8px] text-zinc-600 mt-0.5 font-medium">{sub}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ─── WEEK DOTS ───────────────────────────────────────────────────────────────
+function WeekDots({ data, valueKey, thresholds }: {
+  data: any[];
+  valueKey: string;
+  thresholds: { green: number; yellow: number };
+}) {
+  const last7 = data.slice(-7);
+  return (
+    <div className="flex gap-1.5 items-center">
+      {last7.map((d, i) => {
+        const v = Number(d[valueKey]) || 0;
+        const color = v >= thresholds.green ? '#10b981' : v >= thresholds.yellow ? '#f59e0b' : v > 0 ? '#f43f5e' : '#27272a';
+        const day = d.date ? new Date(d.date).toLocaleDateString('en', { weekday: 'narrow' }) : '';
+        return (
+          <div key={i} className="flex flex-col items-center gap-1">
+            <div className="w-2.5 h-2.5 rounded-full transition-colors" style={{ backgroundColor: color }} title={`${d.date}: ${v}`} />
+            <span className="text-[7px] text-zinc-700 font-bold">{day}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function HRHeatmap({ data }: { data: [number, number][] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   if (!data?.length) return <div className="text-xs text-zinc-700 font-medium">No HR data today</div>;
@@ -752,40 +810,24 @@ export default function SuperSenseDashboard() {
     }).join('\n');
 
     return [
-      "You are an elite sports scientist, performance coach, and personal health advisor for this specific athlete. You have deep knowledge of their biometric data and history. Reference actual numbers in every response. Be direct, specific, and coach-like — not generic.",
+      "You are a personal performance coach. Give SHORT, direct answers — 3-5 sentences max unless asked for detail. Use the athlete's actual numbers. No fluff, no generic advice.",
       "",
-      `## ATHLETE PROFILE`,
-      `Weight: 47kg | Device: Amazfit Balance | Platform: SuperSense (custom Whoop-equivalent)`,
-      `RHR Baseline: ${m.rhrBaseline}bpm (10th percentile of last 90 days)`,
-      rp ? `Best running pace: ${rp.bestPace.toFixed(2)}/km | Predicted 5K: ${rp.fiveK.time} | 10K: ${rp.tenK.time} | Half: ${rp.half.time}` : '',
+      `ATHLETE (${m.latest.date}): Recovery ${m.recoveryScore}/100 | Strain ${m.strainScore}/21 | Sleep ${m.latest.sleep_score}/100 | RHR ${m.latest.hr_resting}bpm (baseline ${m.rhrBaseline}, delta ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta}) | HRV ${m.estHRV}ms | Stress ${m.latest.stress_current}/100`,
+      `Sleep: ${(m.totalSleep/60).toFixed(1)}h | Deep ${m.deepSleep}min | REM ${m.remSleep}min | Steps ${(m.latest.steps||0).toLocaleString()} | TSB ${m.tsb} (ATL ${m.atl}/CTL ${m.ctl}) | PAI ${m.latest.pai_total}`,
+      rp ? `Running: best ${rp.bestPace.toFixed(2)}/km | 5K ${rp.fiveK.time} | 10K ${rp.tenK.time}` : '',
       "",
-      `## TODAY'S STATUS (${m.latest.date})`,
-      `Recovery: ${m.recoveryScore}/100 | Strain: ${m.strainScore}/21 | Sleep Score: ${m.latest.sleep_score}/100`,
-      `RHR: ${m.latest.hr_resting}bpm (delta: ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta} from baseline)`,
-      `HRV: ${m.estHRV}ms | SpO2: ${m.latest.spo2_current}% | Stress: ${m.latest.stress_current}/100`,
-      `Sleep: ${(m.totalSleep/60).toFixed(1)}h total | Deep: ${m.deepSleep}min | REM: ${m.remSleep}min | Wake: ${m.wakeSleep}min`,
-      `Steps: ${(m.latest.steps||0).toLocaleString()} | Calories: ${m.latest.calories} | Body Temp: ${m.latest.body_temp}°C`,
-      `PAI Total: ${m.latest.pai_total} | TSB: ${m.tsb} (ATL: ${m.atl} / CTL: ${m.ctl})`,
+      `14d sleep: ${last14Sleep}`,
+      `14d RHR: ${rhrTrend}`,
+      `Last 7d workouts: ${recentWorkoutsSummary || 'none'}`,
+      `7d avg: RHR ${m.avgRHR7}bpm | Steps ${(m.avgSteps7/1000).toFixed(1)}k | Sleep ${m.avgSleep7}h`,
       "",
-      `## 14-DAY SLEEP TREND`,
-      last14Sleep,
-      "",
-      `## 14-DAY RHR TREND`,
-      rhrTrend,
-      "",
-      `## LAST 7 DAYS WORKOUTS`,
-      recentWorkoutsSummary || 'No workouts logged',
-      "",
-      `## 7-DAY AVERAGES`,
-      `Avg RHR: ${m.avgRHR7}bpm | Avg Steps: ${(m.avgSteps7/1000).toFixed(1)}k | Avg Sleep: ${m.avgSleep7}h`,
-      "",
-      "Answer concisely. Reference specific numbers from the data. Remember everything discussed in this conversation.",
+      "RESPONSE FORMAT: Be like a blunt coach texting between sets. Short sentences. Reference specific numbers. If asked for today's plan, give max 3 bullet points.",
     ].filter(Boolean).join('\n');
   };
 
   const runAI = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     setAiLoading(true);
-    const initialPrompt = `Give me a brief daily briefing: what's my readiness today, should I train hard or easy, and what's the one thing I should focus on based on my recent data?`;
+    const initialPrompt = `Today's status: recovery ${m.recoveryScore}/100, sleep ${m.latest.sleep_score}/100, strain ${m.strainScore}/21. Give me a 2-sentence briefing and whether to train hard or easy today.`;
     try {
       const systemPrompt = buildSystemPrompt(m);
       const res = await fetch('/api/ai', {
@@ -983,27 +1025,74 @@ export default function SuperSenseDashboard() {
         </div>
         )}
 
-        {/* HERO SCORES */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { value: recoveryScore, max: 100, color: '#10b981', label: 'Recovery', sub: `RHR ${latest.hr_resting || '--'} bpm · baseline ${rhrBaseline}`, glossaryKey: 'Recovery' },
-            { value: strainScore, max: 21, color: '#818cf8', label: 'Strain', sub: `${todayWorkouts.length} sessions today`, glossaryKey: 'Strain' },
-            { value: latest.sleep_score || 0, max: 100, color: '#c084fc', label: 'Sleep', sub: `${(totalSleep / 60).toFixed(1)}h · score` },
-            { value: estHRV, max: 150, color: '#fb923c', label: 'HRV', sub: `RHR ${latest.hr_resting || '--'} · score ${latest.sleep_score || '--'}`, glossaryKey: 'HRV' },
-          ].map((s, i) => (
-            <div key={i} className="bg-zinc-900/50 border border-zinc-800/40 rounded-2xl py-6 flex justify-center hover:border-zinc-700/50 transition-all">
-              <ScoreRing {...s} size={100} />
-            </div>
-          ))}
-        </div>
+        {/* WHOOP-STYLE HERO RINGS */}
+        {(() => {
+          const recoveryStatus = recoveryScore >= 85 ? 'PEAK' : recoveryScore >= 70 ? 'GOOD' : recoveryScore >= 50 ? 'MODERATE' : 'LOW';
+          const recoveryColor = recoveryScore >= 85 ? '#10b981' : recoveryScore >= 70 ? '#34d399' : recoveryScore >= 50 ? '#f59e0b' : '#f43f5e';
+          const recoveryTrack = recoveryScore >= 85 ? 'rgba(16,185,129,0.1)' : recoveryScore >= 70 ? 'rgba(52,211,153,0.1)' : recoveryScore >= 50 ? 'rgba(245,158,11,0.1)' : 'rgba(244,63,94,0.1)';
+          const strainStatus = strainScore >= 14 ? 'ALL OUT' : strainScore >= 10 ? 'STRAINED' : strainScore >= 6 ? 'MODERATE' : 'LIGHT';
+          const sleepStatus = (latest.sleep_score||0) >= 85 ? 'OPTIMAL' : (latest.sleep_score||0) >= 70 ? 'GOOD' : (latest.sleep_score||0) >= 50 ? 'FAIR' : 'POOR';
+          return (
+            <div className="bg-zinc-900/30 border border-zinc-800/40 rounded-3xl p-6">
+              {/* Three main rings */}
+              <div className="grid grid-cols-3 gap-4 mb-6">
+                <div className="flex justify-center">
+                  <WhoopRing value={recoveryScore} max={100} color={recoveryColor} trackColor={recoveryTrack}
+                    label="Recovery" status={recoveryStatus}
+                    sub={`RHR ${latest.hr_resting || '--'} · ${rhrDelta >= 0 ? '+' : ''}${rhrDelta} vs baseline`} size={140} />
+                </div>
+                <div className="flex justify-center">
+                  <WhoopRing value={strainScore} max={21} color="#818cf8" trackColor="rgba(129,140,248,0.1)"
+                    label="Strain" status={strainStatus}
+                    sub={`${todayWorkouts.length} session${todayWorkouts.length !== 1 ? 's' : ''} today`} size={140} />
+                </div>
+                <div className="flex justify-center">
+                  <WhoopRing value={latest.sleep_score || 0} max={100} color="#c084fc" trackColor="rgba(192,132,252,0.1)"
+                    label="Sleep" status={sleepStatus}
+                    sub={`${(totalSleep/60).toFixed(1)}h · ${deepSleep}m deep`} size={140} />
+                </div>
+              </div>
 
-        {/* QUICK STATS */}
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-2.5">
+              {/* Secondary metrics strip */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-4 border-t border-zinc-800/40">
+                {[
+                  { label: 'HRV', value: estHRV, unit: 'ms', color: '#fb923c', sub: 'heart rate variability' },
+                  { label: 'RHR', value: latest.hr_resting || '--', unit: 'bpm', color: '#f87171', sub: `baseline ${rhrBaseline}` },
+                  { label: 'SpO₂', value: latest.spo2_current || '--', unit: '%', color: latest.spo2_current >= 97 ? '#10b981' : '#f59e0b', sub: latest.spo2_current >= 97 ? 'optimal' : 'monitor' },
+                  { label: 'Stress', value: latest.stress_current || '--', unit: '/100', color: (latest.stress_current||0) < 40 ? '#10b981' : (latest.stress_current||0) < 70 ? '#f59e0b' : '#f43f5e', sub: (latest.stress_current||0) < 40 ? 'low' : (latest.stress_current||0) < 70 ? 'moderate' : 'high' },
+                ].map(s => (
+                  <div key={s.label} className="text-center py-2">
+                    <p className="text-[8px] font-black uppercase tracking-[0.2em] text-zinc-600 mb-1">{s.label}</p>
+                    <p className="font-black leading-none text-2xl tracking-tight" style={{ color: s.color }}>{s.value}<span className="text-xs text-zinc-600 ml-0.5 font-medium">{s.unit}</span></p>
+                    <p className="text-[8px] text-zinc-700 mt-1 uppercase tracking-wider font-bold">{s.sub}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* 7-day pattern dots */}
+              <div className="grid grid-cols-3 gap-4 pt-4 border-t border-zinc-800/40 mt-2">
+                <div>
+                  <p className="text-[8px] font-black uppercase tracking-[0.18em] text-zinc-600 mb-2">Recovery · 7d</p>
+                  <WeekDots data={chartData} valueKey="Score" thresholds={{ green: 80, yellow: 60 }} />
+                </div>
+                <div>
+                  <p className="text-[8px] font-black uppercase tracking-[0.18em] text-zinc-600 mb-2">Sleep score · 7d</p>
+                  <WeekDots data={chartData} valueKey="Score" thresholds={{ green: 80, yellow: 60 }} />
+                </div>
+                <div>
+                  <p className="text-[8px] font-black uppercase tracking-[0.18em] text-zinc-600 mb-2">Steps · 7d</p>
+                  <WeekDots data={chartData} valueKey="StepsK" thresholds={{ green: 80, yellow: 50 }} />
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ACTIVITY STRIP */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
           <MetricCard label="Steps" value={(latest.steps || 0).toLocaleString()} icon="👟" color={(latest.steps || 0) > 8000 ? '#10b981' : '#94a3b8'} sub={`Goal: 10k · ${Math.round((latest.steps || 0) / 100)}%`} />
           <MetricCard label="Calories" value={latest.calories || '--'} unit="kcal" icon="🔥" color="#fbbf24" />
-          <MetricCard label="SpO₂" value={latest.spo2_current || '--'} unit="%" icon="🫁" color={latest.spo2_current >= 97 ? '#10b981' : latest.spo2_current >= 95 ? '#f59e0b' : '#f43f5e'} tooltip={GLOSSARY.SpO2} />
-          <MetricCard label="Stress" value={latest.stress_current || '--'} icon="🧠" color={latest.stress_current < 40 ? '#10b981' : latest.stress_current < 70 ? '#f59e0b' : '#f43f5e'} sub={latest.stress_current < 40 ? 'Low' : latest.stress_current < 70 ? 'Moderate' : 'High'} />
-          <MetricCard label="PAI Total" value={latest.pai_total || 0} icon="📈" color={(latest.pai_total || 0) >= 100 ? '#10b981' : '#818cf8'} sub={(latest.pai_total || 0) >= 100 ? 'Optimal zone' : `${100 - (latest.pai_total || 0)} to goal`} tooltip={GLOSSARY.PAI} />
+          <MetricCard label="PAI Total" value={latest.pai_total || 0} icon="📈" color={(latest.pai_total || 0) >= 100 ? '#10b981' : '#818cf8'} sub={(latest.pai_total || 0) >= 100 ? 'Optimal' : `${100 - (latest.pai_total || 0)} to goal`} tooltip={GLOSSARY.PAI} />
           <MetricCard label="Body Temp" value={latest.body_temp || '--'} unit="°C" icon="🌡" color={latest.body_temp > 37.5 ? '#f43f5e' : '#94a3b8'} />
         </div>
 
