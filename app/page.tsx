@@ -181,41 +181,91 @@ function predictRaceTimes(workouts: Workout[]) {
     return h > 0 ? `${h}h ${mn}m` : `${mn}:${String(s).padStart(2, '0')}`;
   };
   const fmtRacePace = (m: number, d: number) => fmtPace(m / d);
-  // Only use runs >=5km — short runs skew Riegel badly
-  // Prefer avg_pace_min_km from DB (device-validated); fall back to calculated
-  const runs = workouts
+
+  // Build run list — all distances, prefer DB pace field
+  const allRuns = workouts
     .filter(w => isRunning(w))
     .map(w => {
       const dist = getDistance(w);
       const calcedPace = calcPace(w);
       const pace = (w.avg_pace_min_km && w.avg_pace_min_km > 3 && w.avg_pace_min_km < 20)
         ? w.avg_pace_min_km : calcedPace;
-      return { dist, pace, hr: w.avg_hr, date: (w.date || String(w.start_time)).slice(0, 10) };
+      const dateStr = (w.date || String(w.start_time)).slice(0, 10);
+      return { dist, pace, hr: w.avg_hr, date: dateStr };
     })
-    .filter(r => r.dist >= 5000 && r.pace && r.pace > 3 && r.pace < 20);
-  if (runs.length < 2) return null;
-  // Weight distance more heavily (0.20) so long efforts dominate over short sprints
-  const best = runs.reduce((a, b) => {
-    const scoreA = (1 / a.pace!) * Math.pow(a.dist / 1000, 0.20);
-    const scoreB = (1 / b.pace!) * Math.pow(b.dist / 1000, 0.20);
-    return scoreA > scoreB ? a : b;
+    .filter(r => r.dist >= 3000 && r.pace && r.pace > 3 && r.pace < 20);
+
+  if (allRuns.length < 2) return null;
+
+  // ── Step 1: Find all-time PB using Riegel-normalised pace to 5K ──────────
+  // This lets us compare a 10K at 5:10/km against a 5K at 4:55/km fairly.
+  // Riegel: equivalent_pace = actual_pace × (dist/5)^0.06
+  const normalize5K = (pace: number, distKm: number) =>
+    pace * Math.pow(distKm / 5, 0.06); // lower = faster when normalised to 5K
+
+  const pbRun = allRuns.reduce((best, r) => {
+    const norm = normalize5K(r.pace!, r.dist / 1000);
+    const bestNorm = normalize5K(best.pace!, best.dist / 1000);
+    return norm < bestNorm ? r : best;
   });
-  const bestPace = best.pace!; const bestDist = best.dist;
-  const riegel = (d: number) => bestPace * (bestDist / 1000) * Math.pow(d / (bestDist / 1000), 1.06);
+
+  // ── Step 2: Check recent form (last 28 days) ──────────────────────────────
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 28);
+  const recentRuns = allRuns.filter(r => new Date(r.date) >= cutoff);
+
+  // Best recent normalised pace
+  const recentBest = recentRuns.length > 0
+    ? recentRuns.reduce((best, r) => {
+        const norm = normalize5K(r.pace!, r.dist / 1000);
+        const bestNorm = normalize5K(best.pace!, best.dist / 1000);
+        return norm < bestNorm ? r : best;
+      })
+    : null;
+
+  // ── Step 3: Use PB pace, but nudge toward recent form ────────────────────
+  // If recent form is >8% slower than PB → athlete may be detraining, use 50/50 blend
+  // If recent form is within 8% of PB → PB is still valid, use PB
+  // If no recent runs → use PB but flag confidence as low
+  let sourcePace = pbRun.pace!;
+  let sourceDist = pbRun.dist;
+  let sourceDate = pbRun.date;
+  let basisLabel = `PB from ${pbRun.date.slice(5)}`;
+
+  if (recentBest) {
+    const pbNorm = normalize5K(pbRun.pace!, pbRun.dist / 1000);
+    const recentNorm = normalize5K(recentBest.pace!, recentBest.dist / 1000);
+    const dropOff = (recentNorm - pbNorm) / pbNorm; // positive = slower recently
+    if (dropOff > 0.08) {
+      // Blend: 40% PB + 60% recent (penalise detraining but don't ignore PB)
+      const blendedPace = pbRun.pace! * 0.4 + recentBest.pace! * 0.6;
+      sourcePace = blendedPace;
+      sourceDist = 5; // treat as 5K equivalent
+      basisLabel = `PB + recent blend`;
+    } else {
+      basisLabel = `PB ${pbRun.date.slice(5)} · recent ✓`;
+    }
+  } else {
+    basisLabel = `PB ${pbRun.date.slice(5)} · no recent runs`;
+  }
+
+  const riegel = (d: number) => sourcePace * (sourceDist / 1000) * Math.pow(d / (sourceDist / 1000), 1.06);
   const fiveK = riegel(5); const tenK = riegel(10); const half = riegel(21.0975); const full = riegel(42.195);
+
   const vo2 = workouts.find(w => w.vo2max && w.vo2max > 20)?.vo2max;
-  const aerobicRuns = runs.filter(r => r.hr > 100 && r.hr < 200 && r.dist > 5000);
+  const aerobicRuns = allRuns.filter(r => r.hr > 100 && r.hr < 200 && r.dist > 5000);
   const latestAE = aerobicRuns.length
     ? parseFloat(((aerobicRuns[0].dist / 1000) / (aerobicRuns[0].hr / 100)).toFixed(2)) : null;
+
   return {
-    bestPace, bestDist, bestDate: best.date,
+    bestPace: pbRun.pace!, bestDist: pbRun.dist, bestDate: pbRun.date,
     fiveK: { time: fmtTime(fiveK), pace: fmtRacePace(fiveK, 5) },
     tenK: { time: fmtTime(tenK), pace: fmtRacePace(tenK, 10) },
     half: { time: fmtTime(half), pace: fmtRacePace(half, 21.0975) },
     full: { time: fmtTime(full), pace: fmtRacePace(full, 42.195) },
     vo2max: vo2, aerobicEfficiency: latestAE,
-    confidence: runs.length >= 8 ? 'high' : runs.length >= 4 ? 'medium' : 'low',
-    basedOn: `${runs.length} runs ≥5km`,
+    recentRuns: recentRuns.length,
+    confidence: recentRuns.length >= 3 ? 'high' : recentRuns.length >= 1 ? 'medium' : 'low',
+    basedOn: basisLabel,
   };
 }
 
@@ -1136,12 +1186,6 @@ export default function SuperSenseDashboard() {
                 ))}
               </div>
 
-              {/* 7-day calendar strips */}
-              <div className="grid grid-cols-3 gap-6 pt-4 border-t border-zinc-800/40">
-                <WeekDots data={chartData} valueKey="Score" label="Sleep score · 7d" thresholds={{ green: 80, yellow: 60 }} />
-                <WeekDots data={chartData} valueKey="Stress" label="Stress · 7d" thresholds={{ green: 40, yellow: 70 }} invert />
-                <WeekDots data={chartData} valueKey="Steps" label="Steps · 7d" thresholds={{ green: 8000, yellow: 5000 }} />
-              </div>
             </div>
           );
         })()}
@@ -1325,7 +1369,7 @@ export default function SuperSenseDashboard() {
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">Race Time Predictions</h3>
-                        <p className="text-[9px] text-zinc-600 mt-0.5">Riegel formula · {racePredictions.basedOn} · best run {racePredictions.bestDate?.slice(5)}</p>
+                        <p className="text-[9px] text-zinc-600 mt-0.5">{racePredictions.basedOn} · {racePredictions.recentRuns} recent runs</p>
                       </div>
                       <Tag color={racePredictions.confidence === 'high' ? '#10b981' : racePredictions.confidence === 'medium' ? '#f59e0b' : '#f43f5e'}>{racePredictions.confidence} confidence</Tag>
                     </div>
