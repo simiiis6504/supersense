@@ -176,31 +176,46 @@ const isRunning = (w: Workout) =>
 
 // ─── RACE PREDICTIONS ────────────────────────────────────────────────────────
 function predictRaceTimes(workouts: Workout[]) {
+  const fmtTime = (m: number) => {
+    const h = Math.floor(m / 60); const mn = Math.floor(m % 60); const s = Math.round((m % 1) * 60);
+    return h > 0 ? `${h}h ${mn}m` : `${mn}:${String(s).padStart(2, '0')}`;
+  };
+  const fmtRacePace = (m: number, d: number) => fmtPace(m / d);
+  // Only use runs >=5km — short runs skew Riegel badly
+  // Prefer avg_pace_min_km from DB (device-validated); fall back to calculated
   const runs = workouts
     .filter(w => isRunning(w))
-    .map(w => ({ dist: getDistance(w), pace: calcPace(w), hr: w.avg_hr, maxHr: w.max_hr }))
-    .filter(r => r.dist > 3000 && r.pace && r.pace > 3 && r.pace < 20);
+    .map(w => {
+      const dist = getDistance(w);
+      const calcedPace = calcPace(w);
+      const pace = (w.avg_pace_min_km && w.avg_pace_min_km > 3 && w.avg_pace_min_km < 20)
+        ? w.avg_pace_min_km : calcedPace;
+      return { dist, pace, hr: w.avg_hr, date: (w.date || String(w.start_time)).slice(0, 10) };
+    })
+    .filter(r => r.dist >= 5000 && r.pace && r.pace > 3 && r.pace < 20);
   if (runs.length < 2) return null;
+  // Weight distance more heavily (0.20) so long efforts dominate over short sprints
   const best = runs.reduce((a, b) => {
-  const scoreA = (1 / a.pace!) * Math.pow(a.dist / 1000, 0.15);
-  const scoreB = (1 / b.pace!) * Math.pow(b.dist / 1000, 0.15);
-  return scoreA > scoreB ? a : b;
-});
+    const scoreA = (1 / a.pace!) * Math.pow(a.dist / 1000, 0.20);
+    const scoreB = (1 / b.pace!) * Math.pow(b.dist / 1000, 0.20);
+    return scoreA > scoreB ? a : b;
+  });
   const bestPace = best.pace!; const bestDist = best.dist;
   const riegel = (d: number) => bestPace * (bestDist / 1000) * Math.pow(d / (bestDist / 1000), 1.06);
-  const fmtTime = (m: number) => { const h = Math.floor(m / 60); const mn = Math.floor(m % 60); const s = Math.round((m % 1) * 60); return h > 0 ? `${h}h ${mn}m` : `${mn}:${String(s).padStart(2, '0')}`; };
-  const fmtRacePace = (m: number, d: number) => fmtPace(m / d);
   const fiveK = riegel(5); const tenK = riegel(10); const half = riegel(21.0975); const full = riegel(42.195);
   const vo2 = workouts.find(w => w.vo2max && w.vo2max > 20)?.vo2max;
+  const aerobicRuns = runs.filter(r => r.hr > 100 && r.hr < 200 && r.dist > 5000);
+  const latestAE = aerobicRuns.length
+    ? parseFloat(((aerobicRuns[0].dist / 1000) / (aerobicRuns[0].hr / 100)).toFixed(2)) : null;
   return {
-    bestPace, bestDist,
+    bestPace, bestDist, bestDate: best.date,
     fiveK: { time: fmtTime(fiveK), pace: fmtRacePace(fiveK, 5) },
     tenK: { time: fmtTime(tenK), pace: fmtRacePace(tenK, 10) },
     half: { time: fmtTime(half), pace: fmtRacePace(half, 21.0975) },
     full: { time: fmtTime(full), pace: fmtRacePace(full, 42.195) },
-    vo2max: vo2,
-    confidence: runs.length >= 5 ? 'high' : runs.length >= 3 ? 'medium' : 'low',
-    basedOn: `${runs.length} runs`,
+    vo2max: vo2, aerobicEfficiency: latestAE,
+    confidence: runs.length >= 8 ? 'high' : runs.length >= 4 ? 'medium' : 'low',
+    basedOn: `${runs.length} runs ≥5km`,
   };
 }
 
@@ -235,17 +250,27 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
   const wakePenalty = Math.min(10, wakeRatio * 100);
   const recoveryScore = Math.min(100, Math.max(0, Math.round(sleepFactor + deepBonus + remBonus + stressFactor + rhrFactor - wakePenalty)));
 
-  const strainFromSteps = Math.min(6, (latest.steps || 0) / 3000);
   const todayWorkouts = workouts.filter(w => {
     const wDate = typeof w.start_time === 'string' ? w.start_time.slice(0, 10) : w.date;
     return wDate === latest.date;
   });
-  const strainFromWorkouts = todayWorkouts.reduce((s, w) => {
+
+  // TRIMP-style strain: time in HR zones × zone multipliers (more accurate than raw calories)
+  // Zone thresholds based on maxHR ~195 (typical for fit athlete)
+  const maxHR = 195;
+  const calcTRIMP = (w: Workout): number => {
     const mins = getDurationMinutes(w);
-    const hrFactor = w.avg_hr > 0 ? (w.avg_hr - 60) / 100 : 0.5;
-    return s + (mins / 20) * (1 + hrFactor);
-  }, 0);
-  const strainScore = parseFloat(Math.min(21, strainFromSteps + strainFromWorkouts * 3).toFixed(1));
+    if (mins <= 0) return 0;
+    const hr = w.avg_hr || 0;
+    if (hr <= 0) return (mins / 20) * 0.5; // fallback
+    const hrPct = hr / maxHR;
+    // Zone multipliers: Z1=0.9, Z2=1.1, Z3=1.5, Z4=2.0, Z5=3.0
+    const mult = hrPct < 0.6 ? 0.9 : hrPct < 0.7 ? 1.1 : hrPct < 0.8 ? 1.5 : hrPct < 0.9 ? 2.0 : 3.0;
+    return (mins * hrPct * mult) / 10;
+  };
+  const strainFromSteps = Math.min(4, (latest.steps || 0) / 4000);
+  const strainFromWorkouts = todayWorkouts.reduce((s, w) => s + calcTRIMP(w), 0);
+  const strainScore = parseFloat(Math.min(21, strainFromSteps + strainFromWorkouts).toFixed(1));
 
   const estHRV = (latest as any).hrv || 0;
 
@@ -290,6 +315,33 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
 
   const racePredictions = predictRaceTimes(workouts);
 
+  // Sleep debt: vs 8h target over last 7 nights
+  const sleepTarget = 8 * 60; // 480 min
+  const sleepDebt = Math.round(last7.reduce((acc, d) => {
+    const s = d.sleep_total_minutes || ((d.sleep_deep_minutes||d.deep_sleep_minutes||0)+(d.sleep_rem_minutes||d.rem_sleep_minutes||0)+(d.sleep_light_minutes||d.shallow_sleep_minutes||0));
+    return acc + Math.max(0, sleepTarget - s);
+  }, 0) / 60 * 10) / 10; // hours of debt
+
+  // Recovery trend: avg of last 3 days vs 3 days before that
+  const computeDayRecovery = (d: DailyHealth, baseline: number): number => {
+    const sTotal = d.sleep_total_minutes || 1;
+    const deep = (d.sleep_deep_minutes||d.deep_sleep_minutes||0)/sTotal;
+    const rem = (d.sleep_rem_minutes||d.rem_sleep_minutes||0)/sTotal;
+    const wake = (d.sleep_wake_minutes||d.wake_minutes||0)/sTotal;
+    const sf = ((d.sleep_score||80)/100)*35;
+    const db = Math.min(30,(deep/0.20)*30);
+    const rb = Math.min(15,(rem/0.22)*15);
+    const st = (1-((d.stress_current||30)/100))*10;
+    const rhr = Math.max(0,20-((d.hr_resting||baseline)-baseline)*3);
+    const wp = Math.min(10,wake*100);
+    return Math.min(100,Math.max(0,Math.round(sf+db+rb+st+rhr-wp)));
+  };
+  const recent3 = sorted.slice(-3).map(d => computeDayRecovery(d, rhrBaseline));
+  const prev3 = sorted.slice(-6, -3).map(d => computeDayRecovery(d, rhrBaseline));
+  const avgRecent = recent3.length ? recent3.reduce((a,b)=>a+b,0)/recent3.length : 0;
+  const avgPrev = prev3.length ? prev3.reduce((a,b)=>a+b,0)/prev3.length : avgRecent;
+  const recoveryTrend: 'up' | 'down' | 'flat' = avgRecent > avgPrev + 3 ? 'up' : avgRecent < avgPrev - 3 ? 'down' : 'flat';
+
   const insights: string[] = [];
   if (recoveryScore >= 85) insights.push(`Full recovery at ${recoveryScore}/100 — systems primed for high output today.`);
   else if (recoveryScore >= 65) insights.push(`Moderate recovery (${recoveryScore}/100). Aerobic work optimal; avoid maximal efforts.`);
@@ -306,6 +358,7 @@ function computeMetrics(data: DailyHealth[], workouts: Workout[]) {
     tdee, neat, exerciseBurn, BMR,
     deepSleep, remSleep, lightSleep, wakeSleep, totalSleep,
     avgRHR7, avgSteps7, avgSleep7, rhrDelta, rhrBaseline,
+    sleepDebt, recoveryTrend,
     todayWorkouts, insight: insights.slice(0, 2).join(' '),
     racePredictions,
   };
@@ -424,6 +477,74 @@ function Ring({ pct, color, size = 96, strokeW = 8 }: { pct: number; color: stri
         strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
         style={{ transition: 'stroke-dashoffset 1.2s cubic-bezier(0.34,1.56,0.64,1)' }} />
     </svg>
+  );
+}
+
+// ─── WHOOP-STYLE RING ────────────────────────────────────────────────────────
+function WhoopRing({ value, max, color, trackColor, label, status, statusColor, sub, size = 140 }: {
+  value: number; max: number; color: string; trackColor: string;
+  label: string; status: string; statusColor?: string; sub?: string; size?: number;
+}) {
+  const strokeW = Math.round(size * 0.13);
+  const r = (size - strokeW) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.min(Math.max(value / max, 0), 1);
+  const offset = c * (1 - pct);
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', display: 'block' }}>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={trackColor} strokeWidth={strokeW} strokeLinecap="round" />
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={strokeW}
+            strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 1.4s cubic-bezier(0.34,1.56,0.64,1)' }} />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5">
+          <span className="font-black leading-none text-zinc-100" style={{ fontSize: size * 0.24 }}>
+            {isNaN(value) || value === 0 ? '--' : value}
+          </span>
+          <span className="font-black uppercase tracking-widest leading-none" style={{ fontSize: size * 0.08, color: statusColor || color }}>{status}</span>
+        </div>
+      </div>
+      <div className="text-center">
+        <p className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-400">{label}</p>
+        {sub && <p className="text-[8px] text-zinc-600 mt-0.5">{sub}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ─── WEEK DOTS ────────────────────────────────────────────────────────────────
+function WeekDots({ data, valueKey, thresholds, label, invert = false }: {
+  data: any[]; valueKey: string; label: string;
+  thresholds: { green: number; yellow: number };
+  invert?: boolean; // true = lower value is better (stress, RHR)
+}) {
+  const last7 = data.slice(-7);
+  return (
+    <div>
+      <p className="text-[8px] font-black uppercase tracking-[0.18em] text-zinc-600 mb-2">{label}</p>
+      <div className="flex gap-2 items-end">
+        {last7.map((d, i) => {
+          const v = Number(d[valueKey]) || 0;
+          let color: string;
+          if (v === 0) {
+            color = '#27272a';
+          } else if (invert) {
+            color = v <= thresholds.green ? '#10b981' : v <= thresholds.yellow ? '#f59e0b' : '#ef4444';
+          } else {
+            color = v >= thresholds.green ? '#10b981' : v >= thresholds.yellow ? '#f59e0b' : '#ef4444';
+          }
+          const day = d.fullDate ? new Date(d.fullDate + 'T12:00:00').toLocaleDateString('en', { weekday: 'narrow' }) : '';
+          return (
+            <div key={i} className="flex flex-col items-center gap-1.5 flex-1">
+              <div className="w-full rounded-sm transition-colors" style={{ height: 8, backgroundColor: color }} title={`${d.fullDate}: ${v}`} />
+              <span className="text-[7px] text-zinc-700 font-bold">{day}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -734,7 +855,7 @@ export default function SuperSenseDashboard() {
 
   useEffect(() => { loadData(); const t = setInterval(loadData, 5 * 60 * 1000); return () => clearInterval(t); }, [loadData]);
 
-   const buildSystemPrompt = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
+  const buildSystemPrompt = (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     const rp = m.racePredictions;
     const last14Sleep = m.last30.slice(-14).map(d => {
       const deep = d.sleep_deep_minutes || d.deep_sleep_minutes || 0;
@@ -750,26 +871,42 @@ export default function SuperSenseDashboard() {
       const pace = dur && dist > 200 ? (dur / (dist / 1000)).toFixed(2) : null;
       return `${(w.date || '').slice(5)} ${w.type_name || w.type}: ${dur}min cal=${w.calories||0} hr=${w.avg_hr||'--'}/${w.max_hr||'--'}${dist > 0 ? ' '+((dist/1000).toFixed(1))+'km' : ''}${pace ? ' '+pace+'/km' : ''}`;
     }).join('\n');
- 
+
     return [
-      "You are a personal performance coach. Give SHORT, direct answers — 3-5 sentences max unless asked for detail. Use the athlete's actual numbers. No fluff, no generic advice.",
+      "You are an elite sports scientist, performance coach, and personal health advisor for this specific athlete. You have deep knowledge of their biometric data and history. Reference actual numbers in every response. Be direct, specific, and coach-like — not generic.",
       "",
-      `ATHLETE (${m.latest.date}): Recovery ${m.recoveryScore}/100 | Strain ${m.strainScore}/21 | Sleep ${m.latest.sleep_score}/100 | RHR ${m.latest.hr_resting}bpm (baseline ${m.rhrBaseline}, delta ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta}) | HRV ${m.estHRV}ms | Stress ${m.latest.stress_current}/100`,
-      `Sleep: ${(m.totalSleep/60).toFixed(1)}h | Deep ${m.deepSleep}min | REM ${m.remSleep}min | Steps ${(m.latest.steps||0).toLocaleString()} | TSB ${m.tsb} (ATL ${m.atl}/CTL ${m.ctl}) | PAI ${m.latest.pai_total}`,
-      rp ? `Running: best ${rp.bestPace.toFixed(2)}/km | 5K ${rp.fiveK.time} | 10K ${rp.tenK.time}` : '',
+      `## ATHLETE PROFILE`,
+      `Weight: 47kg | Device: Amazfit Balance | Platform: SuperSense (custom Whoop-equivalent)`,
+      `RHR Baseline: ${m.rhrBaseline}bpm (10th percentile of last 90 days)`,
+      rp ? `Best running pace: ${rp.bestPace.toFixed(2)}/km | Predicted 5K: ${rp.fiveK.time} | 10K: ${rp.tenK.time} | Half: ${rp.half.time}` : '',
       "",
-      `14d sleep: ${last14Sleep}`,
-      `14d RHR: ${rhrTrend}`,
-      `Last 7d workouts: ${recentWorkoutsSummary || 'none'}`,
-      `7d avg: RHR ${m.avgRHR7}bpm | Steps ${(m.avgSteps7/1000).toFixed(1)}k | Sleep ${m.avgSleep7}h`,
+      `## TODAY'S STATUS (${m.latest.date})`,
+      `Recovery: ${m.recoveryScore}/100 | Strain: ${m.strainScore}/21 | Sleep Score: ${m.latest.sleep_score}/100`,
+      `RHR: ${m.latest.hr_resting}bpm (delta: ${m.rhrDelta > 0 ? '+' : ''}${m.rhrDelta} from baseline)`,
+      `HRV: ${m.estHRV}ms | SpO2: ${m.latest.spo2_current}% | Stress: ${m.latest.stress_current}/100`,
+      `Sleep: ${(m.totalSleep/60).toFixed(1)}h total | Deep: ${m.deepSleep}min | REM: ${m.remSleep}min | Wake: ${m.wakeSleep}min`,
+      `Steps: ${(m.latest.steps||0).toLocaleString()} | Calories: ${m.latest.calories} | Body Temp: ${m.latest.body_temp}°C`,
+      `PAI Total: ${m.latest.pai_total} | TSB: ${m.tsb} (ATL: ${m.atl} / CTL: ${m.ctl})`,
       "",
-      "RESPONSE FORMAT: Be like a blunt coach texting between sets. Short sentences. Reference specific numbers. If asked for today's plan, give max 3 bullet points.",
+      `## 14-DAY SLEEP TREND`,
+      last14Sleep,
+      "",
+      `## 14-DAY RHR TREND`,
+      rhrTrend,
+      "",
+      `## LAST 7 DAYS WORKOUTS`,
+      recentWorkoutsSummary || 'No workouts logged',
+      "",
+      `## 7-DAY AVERAGES`,
+      `Avg RHR: ${m.avgRHR7}bpm | Avg Steps: ${(m.avgSteps7/1000).toFixed(1)}k | Avg Sleep: ${m.avgSleep7}h`,
+      "",
+      "Answer concisely. Reference specific numbers from the data. Remember everything discussed in this conversation.",
     ].filter(Boolean).join('\n');
   };
- 
+
   const runAI = async (m: NonNullable<ReturnType<typeof computeMetrics>>) => {
     setAiLoading(true);
-    const initialPrompt = `Today's status: recovery ${m.recoveryScore}/100, sleep ${m.latest.sleep_score}/100, strain ${m.strainScore}/21. Give me a 2-sentence briefing and whether to train hard or easy today.`;
+    const initialPrompt = `Give me a brief daily briefing: what's my readiness today, should I train hard or easy, and what's the one thing I should focus on based on my recent data?`;
     try {
       const systemPrompt = buildSystemPrompt(m);
       const res = await fetch('/api/ai', {
@@ -785,7 +922,7 @@ export default function SuperSenseDashboard() {
     } catch (err: any) { setAiMessage('AI error: ' + (err?.message || String(err)) + ' — ' + m.insight); }
     setAiLoading(false);
   };
- 
+
   const sendChatMessage = async (userMsg: string, currentMetrics: NonNullable<ReturnType<typeof computeMetrics>>) => {
     if (!userMsg.trim() || aiLoading) return;
     setChatInput('');
@@ -811,7 +948,7 @@ export default function SuperSenseDashboard() {
     setAiLoading(false);
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
   };
- 
+
   if (loading) return (
     <div className="min-h-screen bg-[#080809] flex items-center justify-center">
       <div className="text-center space-y-4">
@@ -820,12 +957,12 @@ export default function SuperSenseDashboard() {
       </div>
     </div>
   );
- 
+
   const m = computeMetrics(dailyData, workouts);
   if (!m) return <div className="min-h-screen bg-[#080809] flex items-center justify-center text-zinc-600 text-sm">No data yet.</div>;
- 
-  const { latest, recoveryScore, strainScore, estHRV, chartData, deepSleep, remSleep, lightSleep, wakeSleep, totalSleep, avgRHR7, avgSteps7, avgSleep7, atl, ctl, tsb, tdee, neat, exerciseBurn, BMR, todayWorkouts, insight, sorted, racePredictions, rhrBaseline, rhrDelta } = m;
- 
+
+  const { latest, recoveryScore, strainScore, estHRV, chartData, deepSleep, remSleep, lightSleep, wakeSleep, totalSleep, avgRHR7, avgSteps7, avgSleep7, atl, ctl, tsb, tdee, neat, exerciseBurn, BMR, todayWorkouts, insight, sorted, racePredictions, rhrBaseline, rhrDelta, sleepDebt, recoveryTrend } = m;
+
   const TABS: { id: TabId; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'training', label: 'Training', count: workouts.length },
@@ -833,15 +970,15 @@ export default function SuperSenseDashboard() {
     { id: 'metabolic', label: 'Metabolic' },
     { id: 'history', label: 'History', count: sorted.length },
   ];
- 
+
   return (
     <div className="min-h-screen bg-[#080809] text-zinc-100" style={{ fontFamily: "'DM Sans', 'Figtree', sans-serif" }}>
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-emerald-500/[0.025] rounded-full blur-[120px]" />
       </div>
- 
+
       <div className="relative max-w-[1400px] mx-auto px-4 md:px-8 py-8 space-y-6">
- 
+
         {/* HEADER */}
         <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
@@ -860,7 +997,7 @@ export default function SuperSenseDashboard() {
             </div>
           </div>
         </header>
- 
+
         {/* AI COACH CHAT */}
         {chatOpen && (
           <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl overflow-hidden">
@@ -869,8 +1006,6 @@ export default function SuperSenseDashboard() {
               <p className="text-[8px] font-black text-emerald-500/70 uppercase tracking-[0.25em]">AI Coach · Context-aware · Knows your data</p>
               <div className="ml-auto text-[8px] text-zinc-700 font-bold">{chatHistory.length > 0 ? `${Math.floor(chatHistory.length/2)} exchanges` : 'Start a conversation'}</div>
             </div>
- 
-            {/* Chat messages */}
             <div className="max-h-[420px] overflow-y-auto px-5 py-4 space-y-4">
               {chatHistory.length === 0 && !aiLoading && (
                 <div className="text-zinc-600 text-sm text-center py-6">
@@ -886,8 +1021,8 @@ export default function SuperSenseDashboard() {
                       ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-100 rounded-tr-sm'
                       : 'bg-zinc-800/60 border border-zinc-700/30 text-zinc-300 rounded-tl-sm'
                   }`}>
-                    {msg.content.split('\n').filter(l => l.trim()).map((line, j) => {
-                      const renderBold = (text: string) => text.split(/\*\*(.*?)\*\*/g).map((part, k) => k % 2 === 1 ? <strong key={k} className="font-black text-zinc-100">{part}</strong> : <span key={k}>{part}</span>);
+                    {msg.content.split('\n').filter((l: string) => l.trim()).map((line: string, j: number) => {
+                      const renderBold = (text: string) => text.split(/\*\*(.*?)\*\*/g).map((part: string, k: number) => k % 2 === 1 ? <strong key={k} className="font-black text-zinc-100">{part}</strong> : <span key={k}>{part}</span>);
                       return <p key={j} className={`${j > 0 ? 'mt-1.5' : ''} ${line.startsWith('- ') || line.startsWith('• ') ? 'pl-2' : ''}`}>{renderBold(line)}</p>;
                     })}
                   </div>
@@ -906,16 +1041,9 @@ export default function SuperSenseDashboard() {
               )}
               <div ref={chatEndRef} />
             </div>
- 
-            {/* Quick prompts */}
             {chatHistory.length === 0 && !aiLoading && (
               <div className="px-5 pb-3 flex flex-wrap gap-2">
-                {[
-                  "What's my readiness today?",
-                  "Should I train hard or easy?",
-                  "Analyze my sleep this week",
-                  "How's my training load trending?",
-                ].map(q => (
+                {["What's my readiness today?", "Should I train hard or easy?", "Analyze my sleep this week", "How's my training load trending?"].map(q => (
                   <button key={q} onClick={() => sendChatMessage(q, m)}
                     className="text-[9px] font-bold px-3 py-1.5 rounded-full bg-zinc-800/60 border border-zinc-700/30 text-zinc-400 hover:border-emerald-500/40 hover:text-emerald-400 transition-all">
                     {q}
@@ -923,92 +1051,100 @@ export default function SuperSenseDashboard() {
                 ))}
               </div>
             )}
- 
-            {/* Input */}
             <div className="px-5 pb-4">
               <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
+                <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(chatInput, m); } }}
                   placeholder="Ask about your recovery, training, sleep, nutrition..."
-                  className="flex-1 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
-                />
-                <button
-                  onClick={() => sendChatMessage(chatInput, m)}
-                  disabled={aiLoading || !chatInput.trim()}
-                  className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-sm font-black hover:bg-emerald-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                  ↑
-                </button>
+                  className="flex-1 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all" />
+                <button onClick={() => sendChatMessage(chatInput, m)} disabled={aiLoading || !chatInput.trim()}
+                  className="px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-sm font-black hover:bg-emerald-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed">↑</button>
               </div>
             </div>
           </div>
         )}
- 
-        {/* AI QUICK INSIGHT (shown when chat is closed) */}
+
+        {/* AI INSIGHT (collapsed) */}
         {!chatOpen && (
-        <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-5 flex gap-4">
-          <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">{aiLoading ? '⏳' : '🧠'}</div>
-          <div className="flex-1">
-            <div className="flex items-center justify-between mb-1.5">
-              <p className="text-[8px] font-black text-emerald-500/60 uppercase tracking-[0.25em]">{aiMessage ? 'AI Coach · Last Analysis' : 'Local Analysis'}</p>
-              {aiMessage && <button onClick={() => setChatOpen(true)} className="text-[8px] font-black text-zinc-600 hover:text-emerald-400 uppercase tracking-wider transition-colors">Chat →</button>}
-            </div>
-            {aiLoading ? <p className="text-zinc-600 text-sm animate-pulse">Analyzing biometric patterns...</p> : (
-              <div className="text-sm leading-relaxed font-light space-y-2">
-                {(aiMessage || m.insight).split('\n').filter(l => l.trim()).map((line, i) => {
-                  const renderBold = (text: string) => text.split(/\*\*(.*?)\*\*/g).map((part, j) => j % 2 === 1 ? <strong key={j} className="font-black text-zinc-100">{part}</strong> : <span key={j}>{part}</span>);
-                  return <p key={i} className={`text-zinc-300 ${line.startsWith('- ') || line.match(/^[•·–]/) ? 'pl-3' : ''}`}>{renderBold(line)}</p>;
-                })}
+          <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-4 flex gap-3 items-start">
+            <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs shrink-0 mt-0.5">{aiLoading ? '⏳' : '🧠'}</div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[8px] font-black text-emerald-500/60 uppercase tracking-[0.25em]">{aiMessage ? 'AI Coach' : 'Local insight'}</p>
+                {aiMessage && <button onClick={() => setChatOpen(true)} className="text-[8px] font-black text-zinc-600 hover:text-emerald-400 transition-colors">Chat →</button>}
               </div>
-            )}
+              {aiLoading ? <p className="text-zinc-600 text-sm animate-pulse">Analyzing...</p> : (
+                <div className="text-sm leading-relaxed space-y-1">
+                  {(aiMessage || m.insight).split('\n').filter((l: string) => l.trim()).slice(0, 4).map((line: string, i: number) => {
+                    const renderBold = (text: string) => text.split(/\*\*(.*?)\*\*/g).map((part: string, j: number) => j % 2 === 1 ? <strong key={j} className="font-black text-zinc-100">{part}</strong> : <span key={j}>{part}</span>);
+                    return <p key={i} className="text-zinc-400 text-[13px]">{renderBold(line)}</p>;
+                  })}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
         )}
 
-        {/* HEADER */}
-        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-4xl md:text-5xl font-black tracking-[-0.03em] leading-none">Super<span className="text-emerald-400">Sense</span></h1>
-            <p className="text-[9px] font-bold tracking-[0.25em] uppercase text-zinc-600 mt-1.5">{latest.date} · Amazfit Balance</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <button onClick={() => { setChatOpen(o => !o); if (!aiMessage && !aiLoading) runAI(m); }} disabled={aiLoading && !chatOpen}
-              className="px-4 py-2 bg-zinc-900 border border-zinc-700/50 rounded-xl text-[9px] font-black uppercase tracking-[0.18em] text-zinc-400 hover:border-emerald-500/50 hover:text-emerald-400 transition-all disabled:opacity-40 flex items-center gap-2">
-              <span>{aiLoading ? '⏳' : '🧠'}</span>{chatOpen ? 'Close Coach' : aiLoading ? 'Analyzing...' : 'AI Coach'}
-            </button>
-            <div className="flex items-center gap-2 text-[9px]">
-              <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-emerald-500 font-black uppercase tracking-widest">Live</span>
-              <span className="text-zinc-700">{syncTime}</span>
-            </div>
-          </div>
-        </header>
+        {/* ── WHOOP-STYLE HERO ──────────────────────────────────────────────── */}
+        {(() => {
+          const rScore = recoveryScore;
+          const rColor = rScore >= 85 ? '#10b981' : rScore >= 70 ? '#34d399' : rScore >= 50 ? '#f59e0b' : '#ef4444';
+          const rTrack = rScore >= 85 ? 'rgba(16,185,129,0.12)' : rScore >= 70 ? 'rgba(52,211,153,0.12)' : rScore >= 50 ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)';
+          const rStatus = rScore >= 85 ? 'PEAK' : rScore >= 70 ? 'GOOD' : rScore >= 50 ? 'MOD' : 'LOW';
+          const strainStatus = strainScore >= 14 ? 'ALL OUT' : strainScore >= 10 ? 'STRAINED' : strainScore >= 5 ? 'MOD' : 'LIGHT';
+          const sScore = latest.sleep_score || 0;
+          const sStatus = sScore >= 85 ? 'OPTIMAL' : sScore >= 70 ? 'GOOD' : sScore >= 50 ? 'FAIR' : 'POOR';
+          const trendArrow = recoveryTrend === 'up' ? '↑' : recoveryTrend === 'down' ? '↓' : '→';
+          const trendColor = recoveryTrend === 'up' ? '#10b981' : recoveryTrend === 'down' ? '#ef4444' : '#71717a';
+          return (
+            <div className="bg-zinc-900/30 border border-zinc-800/40 rounded-3xl p-6 space-y-6">
 
-        {/* HERO SCORES */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { value: recoveryScore, max: 100, color: '#10b981', label: 'Recovery', sub: `RHR ${latest.hr_resting || '--'} bpm · baseline ${rhrBaseline}`, glossaryKey: 'Recovery' },
-            { value: strainScore, max: 21, color: '#818cf8', label: 'Strain', sub: `${todayWorkouts.length} sessions today`, glossaryKey: 'Strain' },
-            { value: latest.sleep_score || 0, max: 100, color: '#c084fc', label: 'Sleep', sub: `${(totalSleep / 60).toFixed(1)}h · score` },
-            { value: estHRV, max: 150, color: '#fb923c', label: 'HRV', sub: `RHR ${latest.hr_resting || '--'} · score ${latest.sleep_score || '--'}`, glossaryKey: 'HRV' },
-          ].map((s, i) => (
-            <div key={i} className="bg-zinc-900/50 border border-zinc-800/40 rounded-2xl py-6 flex justify-center hover:border-zinc-700/50 transition-all">
-              <ScoreRing {...s} size={100} />
-            </div>
-          ))}
-        </div>
+              {/* Three big rings */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="flex justify-center">
+                  <WhoopRing value={rScore} max={100} color={rColor} trackColor={rTrack}
+                    label="Recovery" status={rStatus} statusColor={rColor}
+                    sub={`${trendArrow} trend · RHR ${rhrDelta >= 0 ? '+' : ''}${rhrDelta}bpm`} size={148} />
+                </div>
+                <div className="flex justify-center">
+                  <WhoopRing value={strainScore} max={21} color="#818cf8" trackColor="rgba(129,140,248,0.12)"
+                    label="Strain" status={strainStatus}
+                    sub={todayWorkouts.length > 0 ? `${todayWorkouts.length} session${todayWorkouts.length > 1 ? 's' : ''}` : 'no sessions'} size={148} />
+                </div>
+                <div className="flex justify-center">
+                  <WhoopRing value={sScore} max={100} color="#c084fc" trackColor="rgba(192,132,252,0.12)"
+                    label="Sleep" status={sStatus}
+                    sub={`${(totalSleep/60).toFixed(1)}h · ${deepSleep}m deep`} size={148} />
+                </div>
+              </div>
 
-        {/* QUICK STATS */}
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-2.5">
-          <MetricCard label="Steps" value={(latest.steps || 0).toLocaleString()} icon="👟" color={(latest.steps || 0) > 8000 ? '#10b981' : '#94a3b8'} sub={`Goal: 10k · ${Math.round((latest.steps || 0) / 100)}%`} />
-          <MetricCard label="Calories" value={latest.calories || '--'} unit="kcal" icon="🔥" color="#fbbf24" />
-          <MetricCard label="SpO₂" value={latest.spo2_current || '--'} unit="%" icon="🫁" color={latest.spo2_current >= 97 ? '#10b981' : latest.spo2_current >= 95 ? '#f59e0b' : '#f43f5e'} tooltip={GLOSSARY.SpO2} />
-          <MetricCard label="Stress" value={latest.stress_current || '--'} icon="🧠" color={latest.stress_current < 40 ? '#10b981' : latest.stress_current < 70 ? '#f59e0b' : '#f43f5e'} sub={latest.stress_current < 40 ? 'Low' : latest.stress_current < 70 ? 'Moderate' : 'High'} />
-          <MetricCard label="PAI Total" value={latest.pai_total || 0} icon="📈" color={(latest.pai_total || 0) >= 100 ? '#10b981' : '#818cf8'} sub={(latest.pai_total || 0) >= 100 ? 'Optimal zone' : `${100 - (latest.pai_total || 0)} to goal`} tooltip={GLOSSARY.PAI} />
-          <MetricCard label="Body Temp" value={latest.body_temp || '--'} unit="°C" icon="🌡" color={latest.body_temp > 37.5 ? '#f43f5e' : '#94a3b8'} />
-        </div>
+              {/* Vitals row */}
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-3 pt-4 border-t border-zinc-800/40">
+                {[
+                  { label: 'HRV', value: estHRV || '--', unit: 'ms', color: '#fb923c', sub: 'variability' },
+                  { label: 'RHR', value: latest.hr_resting || '--', unit: 'bpm', color: '#f87171', sub: `base ${rhrBaseline}` },
+                  { label: 'SpO₂', value: latest.spo2_current || '--', unit: '%', color: (latest.spo2_current||0) >= 97 ? '#10b981' : '#f59e0b', sub: (latest.spo2_current||0) >= 97 ? 'optimal' : 'monitor' },
+                  { label: 'Stress', value: latest.stress_current || '--', unit: '', color: (latest.stress_current||0) < 40 ? '#10b981' : (latest.stress_current||0) < 70 ? '#f59e0b' : '#ef4444', sub: (latest.stress_current||0) < 40 ? 'low' : (latest.stress_current||0) < 70 ? 'moderate' : 'high' },
+                  { label: 'Steps', value: latest.steps ? `${((latest.steps||0)/1000).toFixed(1)}k` : '--', unit: '', color: (latest.steps||0) > 8000 ? '#10b981' : '#94a3b8', sub: `${Math.min(100,Math.round((latest.steps||0)/100))}% goal` },
+                  { label: 'Sleep debt', value: sleepDebt > 0 ? `-${sleepDebt}h` : 'None', unit: '', color: sleepDebt > 5 ? '#ef4444' : sleepDebt > 2 ? '#f59e0b' : '#10b981', sub: '7d vs 8h/night' },
+                ].map(s => (
+                  <div key={s.label} className="text-center">
+                    <p className="text-[8px] font-black uppercase tracking-[0.18em] text-zinc-600 mb-1">{s.label}</p>
+                    <p className="font-black text-xl leading-none" style={{ color: s.color }}>{s.value}<span className="text-[10px] text-zinc-600 ml-0.5 font-medium">{s.unit}</span></p>
+                    <p className="text-[8px] text-zinc-700 mt-0.5 uppercase tracking-wider">{s.sub}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* 7-day calendar strips */}
+              <div className="grid grid-cols-3 gap-6 pt-4 border-t border-zinc-800/40">
+                <WeekDots data={chartData} valueKey="Score" label="Sleep score · 7d" thresholds={{ green: 80, yellow: 60 }} />
+                <WeekDots data={chartData} valueKey="Stress" label="Stress · 7d" thresholds={{ green: 40, yellow: 70 }} invert />
+                <WeekDots data={chartData} valueKey="Steps" label="Steps · 7d" thresholds={{ green: 8000, yellow: 5000 }} />
+              </div>
+            </div>
+          );
+        })()}
 
         {/* HR HEATMAP */}
         {(() => {
@@ -1189,7 +1325,7 @@ export default function SuperSenseDashboard() {
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <h3 className="text-[9px] font-black uppercase tracking-[0.22em] text-zinc-500">Race Time Predictions</h3>
-                        <p className="text-[9px] text-zinc-600 mt-0.5">Riegel formula · based on {racePredictions.basedOn}</p>
+                        <p className="text-[9px] text-zinc-600 mt-0.5">Riegel formula · {racePredictions.basedOn} · best run {racePredictions.bestDate?.slice(5)}</p>
                       </div>
                       <Tag color={racePredictions.confidence === 'high' ? '#10b981' : racePredictions.confidence === 'medium' ? '#f59e0b' : '#f43f5e'}>{racePredictions.confidence} confidence</Tag>
                     </div>
@@ -1207,14 +1343,18 @@ export default function SuperSenseDashboard() {
                         </div>
                       ))}
                     </div>
-                    {racePredictions.vo2max && (
-                      <div className="mt-3 pt-3 border-t border-zinc-800/40 flex items-center gap-3">
-                        <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-wider">VO₂ Max (device)</span>
-                        <span className="text-lg font-black text-emerald-400">{racePredictions.vo2max}</span>
-                        <span className="text-[9px] text-zinc-500">ml/kg/min</span>
-                        <span className="text-[9px] text-zinc-600 ml-2">{racePredictions.vo2max >= 55 ? '— Elite level' : racePredictions.vo2max >= 47 ? '— Superior' : racePredictions.vo2max >= 42 ? '— Excellent' : racePredictions.vo2max >= 35 ? '— Good' : '— Average'}</span>
-                      </div>
-                    )}
+                    <div className="mt-3 pt-3 border-t border-zinc-800/40 flex flex-wrap gap-x-6 gap-y-2 items-center">
+                      {racePredictions.vo2max && (<>
+                        <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-wider">VO₂ Max</span>
+                        <span className="text-lg font-black text-emerald-400">{racePredictions.vo2max} <span className="text-[9px] text-zinc-500 font-normal">ml/kg/min</span></span>
+                        <span className="text-[9px] text-zinc-600">{racePredictions.vo2max >= 55 ? 'Elite' : racePredictions.vo2max >= 47 ? 'Superior' : racePredictions.vo2max >= 42 ? 'Excellent' : racePredictions.vo2max >= 35 ? 'Good' : 'Average'}</span>
+                      </>)}
+                      {racePredictions.aerobicEfficiency && (<>
+                        <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-wider">Aerobic Efficiency</span>
+                        <span className="text-lg font-black text-sky-400">{racePredictions.aerobicEfficiency} <span className="text-[9px] text-zinc-500 font-normal">km/100bpm</span></span>
+                        <span className="text-[9px] text-zinc-600">higher = more fit</span>
+                      </>)}
+                    </div>
                   </div>
                 )}
 
